@@ -1,0 +1,91 @@
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap");
+@import "tailwindcss";
+@plugin "daisyui" {
+  themes: gemini --default;
+}
+
+@plugin "daisyui/theme" {
+  name: "gemini";
+  default: true;
+  color-scheme: dark;
+  --color-base-100: oklch(13% 0.02 275);
+  --color-base-200: oklch(18% 0.025 275);
+  --color-base-300: oklch(23% 0.03 275);
+  --color-base-content: oklch(94% 0.015 275);
+  --color-primary: oklch(70% 0.2 292);
+  --color-primary-content: oklch(98% 0.01 290);
+  --color-secondary: oklch(72% 0.14 220);
+  --color-secondary-content: oklch(15% 0.03 220);
+  --color-accent: oklch(76% 0.16 165);
+  --color-accent-content: oklch(15% 0.03 165);
+  --color-neutral: oklch(25% 0.025 275);
+  --color-neutral-content: oklch(92% 0.01 275);
+  --color-info: oklch(72% 0.14 240);
+  --color-success: oklch(74% 0.15 155);
+  --color-warning: oklch(80% 0.16 80);
+  --color-error: oklch(68% 0.2 25);
+  --radius-selector: 0.75rem;
+  --radius-field: 0.75rem;
+  --radius-box: 1rem;
+  --border: 1px;
+  --depth: 1;
+  --noise: 0;
+}
+
+:root {
+  font-family: "DM Sans", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+.font-display {
+  font-family: "Manrope", sans-serif;
+}
+
+.orb {
+  position: fixed;
+  border-radius: 9999px;
+  filter: blur(110px);
+  pointer-events: none;
+  opacity: 0.16;
+}
+
+.orb-one {
+  width: 30rem;
+  height: 30rem;
+  top: -12rem;
+  left: -10rem;
+  background: #9b6dff;
+}
+
+.orb-two {
+  width: 24rem;
+  height: 24rem;
+  right: -8rem;
+  bottom: -8rem;
+  background: #2ac5b3;
+}
+
+.composer {
+  transition: border-color 160ms ease, transform 160ms ease;
+}
+
+.chat-bubble {
+  overflow-wrap: anywhere;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
