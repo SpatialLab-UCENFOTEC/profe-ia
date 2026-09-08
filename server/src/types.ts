@@ -5,4 +5,7 @@ export interface ChatMessage {
   content: string;
 }
 
-export type GenerateReply = (messages: ChatMessage[]) => Promise<string>;
+export type GenerateReply = (
+  messages: ChatMessage[],
+  currentHtml?: string,
+) => Promise<AsyncIterable<string>>;

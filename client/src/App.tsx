@@ -1,34 +1,45 @@
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { WebXrStreamParser, isCompleteHtmlDocument } from "./streamParser";
 
 type Role = "user" | "model";
+type PreviewMode = "closed" | "split" | "fullscreen";
 
 interface Message {
   id: string;
   role: Role;
   content: string;
+  html?: string;
 }
+
+type StreamEvent =
+  | { type: "delta"; text: string }
+  | { type: "done" }
+  | { type: "error"; message: string };
 
 const SUGGESTIONS = [
-  "Explícame un concepto difícil con una analogía",
-  "Ayúdame a organizar mi semana",
-  "Dame una idea creativa para un proyecto",
+  "Crea un sistema solar interactivo en WebXR",
+  "Diseña una galería virtual con A-Frame",
+  "Haz un juego de bloques 3D con Three.js",
 ];
+const MAX_CONTEXT_MESSAGES = 30;
 
-function SparkleIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" className="size-5 fill-current">
-      <path d="M12 1.8c.4 5.5 4.7 9.8 10.2 10.2-5.5.4-9.8 4.7-10.2 10.2C11.6 16.7 7.3 12.4 1.8 12 7.3 11.6 11.6 7.3 12 1.8Z" />
-    </svg>
-  );
+function Icon({ name }: { name: "sparkle" | "send" | "expand" | "download" | "reload" | "back" }) {
+  const paths = {
+    sparkle: <path d="M12 1.8c.4 5.5 4.7 9.8 10.2 10.2-5.5.4-9.8 4.7-10.2 10.2C11.6 16.7 7.3 12.4 1.8 12 7.3 11.6 11.6 7.3 12 1.8Z" />,
+    send: <><path d="m4 12 16-8-6.2 16-2.4-6.4L4 12Z" /><path d="m11.4 13.6 3.7-3.7" /></>,
+    expand: <><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" /><path d="m3 8 6-6m12 6-6-6M3 16l6 6m12-6-6 6" /></>,
+    download: <><path d="M12 3v12m0 0 5-5m-5 5-5-5" /><path d="M5 20h14" /></>,
+    reload: <><path d="M20 7v5h-5" /><path d="M19 12a7 7 0 1 0-2 5" /></>,
+    back: <><path d="m15 18-6-6 6-6" /><path d="M9 12h11" /></>,
+  };
+  const filled = name === "sparkle";
+  return <svg viewBox="0 0 24 24" aria-hidden="true" className="size-5" fill={filled ? "currentColor" : "none"} stroke={filled ? "none" : "currentColor"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
 }
 
-function SendIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" className="size-5" fill="none" stroke="currentColor" strokeWidth="2">
-      <path strokeLinecap="round" strokeLinejoin="round" d="m4 12 16-8-6.2 16-2.4-6.4L4 12Z" />
-      <path strokeLinecap="round" d="m11.4 13.6 3.7-3.7" />
-    </svg>
-  );
+function Markdown({ children }: { children: string }) {
+  return <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown></div>;
 }
 
 export default function App() {
@@ -36,22 +47,124 @@ export default function App() {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [currentHtml, setCurrentHtml] = useState("");
+  const [lastCompletedHtml, setLastCompletedHtml] = useState("");
+  const [streamingHtml, setStreamingHtml] = useState<string | null>(null);
+  const [streamingSummary, setStreamingSummary] = useState("");
+  const [isPreviewBuilding, setIsPreviewBuilding] = useState(false);
+  const [previewMode, setPreviewMode] = useState<PreviewMode>("closed");
+  const [iframeKey, setIframeKey] = useState(0);
   const endRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const ghostCodeRef = useRef<HTMLPreElement>(null);
+  const buildStartedAtRef = useRef(0);
+  const awaitingFinalLoadRef = useRef(false);
+  const buildFinishTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isLoading]);
+  }, [messages, streamingSummary, isLoading]);
+
+  useEffect(() => {
+    if (ghostCodeRef.current) ghostCodeRef.current.scrollTop = ghostCodeRef.current.scrollHeight;
+  }, [streamingHtml]);
+
+  useEffect(() => () => {
+    if (buildFinishTimerRef.current) clearTimeout(buildFinishTimerRef.current);
+  }, []);
+
+  const processStream = async (response: Response, nextMessages: Message[]) => {
+    if (!response.body) throw new Error("El navegador no pudo abrir la respuesta incremental.");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    const parser = new WebXrStreamParser();
+    let lineBuffer = "";
+    let completed = false;
+    let buildingStarted = false;
+    let committedHtml = "";
+
+    const commitCompletedHtml = (html: string) => {
+      if (committedHtml || !isCompleteHtmlDocument(html)) return;
+      committedHtml = html.trim();
+      awaitingFinalLoadRef.current = true;
+      setCurrentHtml(committedHtml);
+      setLastCompletedHtml(committedHtml);
+      setIframeKey((key) => key + 1);
+      buildFinishTimerRef.current = setTimeout(() => {
+        awaitingFinalLoadRef.current = false;
+        setIsPreviewBuilding(false);
+        setStreamingHtml(null);
+      }, 8000);
+    };
+
+    const updateParsedContent = (text: string) => {
+      const parsed = parser.push(text);
+      if (parsed.hasHtml) {
+        if (!committedHtml) setStreamingHtml(parsed.html);
+        setPreviewMode((mode) => mode === "closed" ? "split" : mode);
+        if (!buildingStarted) {
+          buildingStarted = true;
+          if (buildFinishTimerRef.current) clearTimeout(buildFinishTimerRef.current);
+          buildStartedAtRef.current = performance.now();
+          setIsPreviewBuilding(true);
+        }
+        if (parsed.htmlComplete) commitCompletedHtml(parsed.html);
+      }
+      if (parsed.hasResponse) setStreamingSummary(parsed.response);
+    };
+
+    const handleLine = (line: string) => {
+      if (!line.trim()) return;
+      const event = JSON.parse(line) as StreamEvent;
+      if (event.type === "delta") updateParsedContent(event.text);
+      if (event.type === "error") throw new Error(event.message);
+      if (event.type === "done") completed = true;
+    };
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        lineBuffer += decoder.decode(value, { stream: !done });
+        const lines = lineBuffer.split("\n");
+        lineBuffer = lines.pop() ?? "";
+        for (const line of lines) handleLine(line);
+        if (done) break;
+      }
+      if (lineBuffer.trim()) handleLine(lineBuffer);
+      if (!completed) throw new Error("La conexión terminó antes de completar la respuesta.");
+
+      const result = parser.finish();
+      if (result.html) {
+        commitCompletedHtml(result.html);
+      }
+      setStreamingSummary("");
+      setMessages([
+        ...nextMessages,
+        { id: crypto.randomUUID(), role: "model", content: result.response, html: result.html },
+      ]);
+    } catch (streamError) {
+      if (!committedHtml) {
+        awaitingFinalLoadRef.current = false;
+        if (buildFinishTimerRef.current) clearTimeout(buildFinishTimerRef.current);
+        setIsPreviewBuilding(false);
+      }
+      setCurrentHtml(committedHtml || lastCompletedHtml);
+      setStreamingHtml(null);
+      setStreamingSummary("");
+      throw streamError;
+    }
+  };
 
   const sendMessage = async (content: string) => {
     const cleanContent = content.trim();
     if (!cleanContent || isLoading) return;
-
     const userMessage: Message = { id: crypto.randomUUID(), role: "user", content: cleanContent };
     const nextMessages = [...messages, userMessage];
     setMessages(nextMessages);
     setInput("");
     setError(null);
+    setStreamingHtml(null);
+    setStreamingSummary("");
     setIsLoading(true);
 
     try {
@@ -59,20 +172,15 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          messages: nextMessages.map(({ role, content: messageContent }) => ({
-            role,
-            content: messageContent,
-          })),
+          messages: nextMessages.slice(-MAX_CONTEXT_MESSAGES).map(({ role, content: messageContent }) => ({ role, content: messageContent })),
+          currentHtml: lastCompletedHtml || undefined,
         }),
       });
-      const data = (await response.json()) as { reply?: string; error?: string };
-      if (!response.ok || !data.reply) {
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({})) as { error?: string };
         throw new Error(data.error || "No se pudo completar la solicitud.");
       }
-      setMessages((current) => [
-        ...current,
-        { id: crypto.randomUUID(), role: "model", content: data.reply! },
-      ]);
+      await processStream(response, nextMessages);
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : "Ocurrió un error inesperado.");
     } finally {
@@ -93,116 +201,102 @@ export default function App() {
     }
   };
 
-  return (
-    <main className="relative flex min-h-screen overflow-hidden bg-base-100 text-base-content">
-      <div className="orb orb-one" />
-      <div className="orb orb-two" />
+  const downloadHtml = () => {
+    if (!lastCompletedHtml) return;
+    const url = URL.createObjectURL(new Blob([lastCompletedHtml], { type: "text/html;charset=utf-8" }));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "experiencia-webxr.html";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
 
-      <section className="relative z-10 mx-auto flex min-h-screen w-full max-w-5xl flex-col px-4 py-5 sm:px-7 sm:py-7">
-        <header className="navbar min-h-0 rounded-2xl border border-white/8 bg-base-200/60 px-4 py-3 shadow-xl backdrop-blur-xl">
-          <div className="flex-1 gap-3">
-            <div className="grid size-10 place-items-center rounded-xl bg-primary text-primary-content shadow-lg shadow-primary/20">
-              <SparkleIcon />
-            </div>
-            <div>
-              <h1 className="font-display text-lg font-bold leading-tight tracking-tight">Orbit</h1>
-              <p className="text-xs text-base-content/50">Tu espacio para pensar con Gemini</p>
-            </div>
-          </div>
-          <div className="flex-none">
-            <div className="badge badge-success badge-sm gap-1.5 border-success/20 bg-success/10 px-3 py-3 text-success">
-              <span className="size-1.5 animate-pulse rounded-full bg-success" />
-              En línea
-            </div>
-          </div>
+  const handlePreviewLoaded = () => {
+    if (!awaitingFinalLoadRef.current) return;
+    awaitingFinalLoadRef.current = false;
+    const elapsed = performance.now() - buildStartedAtRef.current;
+    const remaining = Math.max(350, 1100 - elapsed);
+    if (buildFinishTimerRef.current) clearTimeout(buildFinishTimerRef.current);
+    buildFinishTimerRef.current = setTimeout(() => {
+      setIsPreviewBuilding(false);
+      setStreamingHtml(null);
+    }, remaining);
+  };
+
+  const previewHtml = currentHtml || lastCompletedHtml;
+  const isPreviewVisible = previewMode !== "closed" && (Boolean(previewHtml) || isPreviewBuilding);
+
+  return (
+    <main className="app-shell">
+      <div className="orb orb-one" /><div className="orb orb-two" />
+      <section className={`chat-pane ${isPreviewVisible ? "with-preview" : ""}`}>
+        <header className="topbar">
+          <div className="brand-mark"><Icon name="sparkle" /></div>
+          <div className="brand-copy"><h1>Orbit XR</h1><p>Construye mundos WebXR conversando</p></div>
+          {lastCompletedHtml && previewMode === "closed" && <button className="btn btn-sm btn-outline ml-auto" onClick={() => setPreviewMode("split")}>Abrir experiencia</button>}
+          <div className="status"><span /> Gemini conectado</div>
         </header>
 
-        <div className="flex flex-1 flex-col justify-end py-6 sm:py-10">
+        <div className="conversation">
           {messages.length === 0 ? (
-            <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col items-center justify-center text-center">
-              <div className="mb-7 grid size-16 place-items-center rounded-2xl border border-primary/20 bg-primary/10 text-primary shadow-2xl shadow-primary/10">
-                <SparkleIcon />
-              </div>
-              <p className="mb-2 text-sm font-semibold uppercase tracking-[0.24em] text-primary">Una conversación a la vez</p>
-              <h2 className="font-display text-4xl font-bold tracking-tight sm:text-5xl">¿Qué quieres explorar?</h2>
-              <p className="mt-4 max-w-lg text-base leading-relaxed text-base-content/55">
-                Pregunta, crea o resuelve. Gemini está listo para ayudarte a convertir una idea en el siguiente paso.
-              </p>
-              <div className="mt-9 grid w-full gap-2.5 sm:grid-cols-3">
-                {SUGGESTIONS.map((suggestion) => (
-                  <button
-                    key={suggestion}
-                    className="btn h-auto min-h-20 justify-start whitespace-normal border-white/8 bg-base-200/60 px-4 py-3 text-left text-sm font-normal leading-snug hover:border-primary/30 hover:bg-primary/10"
-                    onClick={() => void sendMessage(suggestion)}
-                  >
-                    {suggestion}
-                  </button>
-                ))}
-              </div>
+            <div className="welcome">
+              <div className="welcome-icon"><Icon name="sparkle" /></div>
+              <p className="eyebrow">Laboratorio WebXR</p>
+              <h2>Describe el mundo que quieres crear</h2>
+              <p>Orbit XR escribe la experiencia, te explica cada decisión y la muestra mientras se está construyendo.</p>
+              <div className="suggestions">{SUGGESTIONS.map((suggestion) => <button key={suggestion} onClick={() => void sendMessage(suggestion)}>{suggestion}</button>)}</div>
             </div>
           ) : (
-            <div className="mx-auto w-full max-w-3xl space-y-5" aria-live="polite">
+            <div className="message-list" aria-live="polite">
               {messages.map((message) => (
-                <div key={message.id} className={`chat ${message.role === "user" ? "chat-end" : "chat-start"}`}>
-                  <div className="chat-header mb-1.5 text-xs text-base-content/40">
-                    {message.role === "user" ? "Tú" : "Orbit"}
+                <article key={message.id} className={`message ${message.role}`}>
+                  <div className="message-label">{message.role === "user" ? "Tú" : "Orbit XR"}</div>
+                  <div className="message-card">
+                    {message.html && <details className="code-disclosure"><summary>HTML generado <span>{message.html.length.toLocaleString()} caracteres</span></summary><pre><code>{message.html}</code></pre></details>}
+                    <Markdown>{message.content}</Markdown>
                   </div>
-                  <div
-                    className={`chat-bubble max-w-[88%] whitespace-pre-wrap text-[15px] leading-relaxed sm:max-w-[78%] ${
-                      message.role === "user"
-                        ? "chat-bubble-primary shadow-lg shadow-primary/10"
-                        : "border border-white/8 bg-base-200 text-base-content"
-                    }`}
-                  >
-                    {message.content}
-                  </div>
-                </div>
+                </article>
               ))}
-              {isLoading && (
-                <div className="chat chat-start">
-                  <div className="chat-header mb-1.5 text-xs text-base-content/40">Orbit</div>
-                  <div className="chat-bubble border border-white/8 bg-base-200 py-4">
-                    <span className="loading loading-dots loading-sm text-primary" aria-label="Gemini está respondiendo" />
-                  </div>
-                </div>
-              )}
+              {isLoading && <article className="message model"><div className="message-label">Orbit XR</div><div className="message-card streaming-card">{streamingHtml && <details className="code-disclosure"><summary>Generando HTML…</summary><pre><code>{streamingHtml}</code></pre></details>}{streamingSummary ? <Markdown>{streamingSummary}</Markdown> : <div className="typing"><i /><i /><i /></div>}</div></article>}
               <div ref={endRef} />
             </div>
           )}
         </div>
 
-        <div className="sticky bottom-0 mx-auto w-full max-w-3xl pb-1">
-          {error && (
-            <div role="alert" className="alert alert-error mb-3 border-error/20 bg-error/10 py-3 text-sm text-error-content">
-              <span>{error}</span>
-              <button className="btn btn-ghost btn-xs" onClick={() => setError(null)} aria-label="Cerrar aviso">✕</button>
-            </div>
-          )}
-          <form onSubmit={handleSubmit} className="composer flex items-end gap-2 rounded-2xl border border-white/10 bg-base-200/90 p-2 shadow-2xl backdrop-blur-xl focus-within:border-primary/40">
-            <textarea
-              ref={textareaRef}
-              className="textarea max-h-40 min-h-12 flex-1 resize-none border-0 bg-transparent px-3 py-3 leading-6 outline-none focus:outline-none"
-              placeholder="Escribe un mensaje…"
-              rows={1}
-              maxLength={8000}
-              value={input}
-              onChange={(event) => setInput(event.target.value)}
-              onKeyDown={handleKeyDown}
-              disabled={isLoading}
-              aria-label="Mensaje"
-            />
-            <button
-              type="submit"
-              className="btn btn-primary btn-square size-12 rounded-xl shadow-lg shadow-primary/20"
-              disabled={isLoading || !input.trim()}
-              aria-label="Enviar mensaje"
-            >
-              <SendIcon />
-            </button>
+        <div className="composer-wrap">
+          {error && <div role="alert" className="error-banner"><span>{error}</span><button onClick={() => setError(null)} aria-label="Cerrar aviso">✕</button></div>}
+          <form onSubmit={handleSubmit} className="composer">
+            <textarea ref={textareaRef} placeholder="Describe una experiencia o pide un cambio…" rows={1} maxLength={8000} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={handleKeyDown} disabled={isLoading} aria-label="Mensaje" />
+            <button type="submit" className="send-button" disabled={isLoading || !input.trim()} aria-label="Enviar mensaje"><Icon name="send" /></button>
           </form>
-          <p className="mt-2 text-center text-[11px] text-base-content/35">Enter para enviar · Shift + Enter para nueva línea</p>
+          <p>Enter para enviar · Shift + Enter para nueva línea</p>
         </div>
       </section>
+
+      {isPreviewVisible && <aside className={`preview-panel ${previewMode === "fullscreen" ? "fullscreen" : ""}`} aria-label="Vista previa WebXR">
+        <div className="preview-toolbar">
+          <div><span className={isPreviewBuilding ? "live-dot pulsing" : "live-dot"} /><strong>{isPreviewBuilding ? "Construyendo" : "Experiencia lista"}</strong></div>
+          <div className="toolbar-actions">
+            <button onClick={() => setIframeKey((key) => key + 1)} title="Recargar preview" aria-label="Recargar preview"><Icon name="reload" /></button>
+            <button onClick={downloadHtml} disabled={!lastCompletedHtml} title="Descargar HTML" aria-label="Descargar HTML"><Icon name="download" /></button>
+            <button onClick={() => setPreviewMode("fullscreen")} title="Ver por completo" aria-label="Ver por completo"><Icon name="expand" /></button>
+            <button onClick={() => setPreviewMode("closed")} className="close-preview" aria-label="Cerrar preview">✕</button>
+          </div>
+        </div>
+        <div className={`preview-stage ${isPreviewBuilding ? "is-building" : ""}`}>
+          {previewHtml ? (
+            <iframe key={iframeKey} title="Experiencia WebXR generada" srcDoc={previewHtml} onLoad={handlePreviewLoaded} sandbox="allow-scripts allow-forms allow-pointer-lock allow-downloads" allow="xr-spatial-tracking; fullscreen; accelerometer; gyroscope" />
+          ) : (
+            <div className="preview-placeholder" aria-hidden="true"><Icon name="sparkle" /></div>
+          )}
+          {isPreviewBuilding && <div className="build-overlay" role="status" aria-live="polite">
+            <div className="liquid-lens"><span /><span /><span /></div>
+            {streamingHtml && <pre ref={ghostCodeRef} className="ghost-code" aria-hidden="true"><code>{streamingHtml}</code></pre>}
+            <div className="build-status"><div className="build-spinner" /><strong>Building... stand by</strong><small>Assembling your WebXR experience</small></div>
+          </div>}
+        </div>
+        {previewMode === "fullscreen" && <button className="floating-back" onClick={() => setPreviewMode("split")}><Icon name="back" /> Volver al chat</button>}
+      </aside>}
     </main>
   );
 }

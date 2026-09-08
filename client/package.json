@@ -6,12 +6,15 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "test": "tsx --test test/**/*.test.ts",
     "typecheck": "tsc -b --pretty false",
     "preview": "vite preview"
   },
   "dependencies": {
     "react": "latest",
-    "react-dom": "latest"
+    "react-dom": "latest",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@tailwindcss/vite": "latest",
@@ -20,6 +23,7 @@
     "@vitejs/plugin-react": "latest",
     "daisyui": "latest",
     "tailwindcss": "latest",
+    "tsx": "latest",
     "typescript": "latest",
     "vite": "latest"
   }
