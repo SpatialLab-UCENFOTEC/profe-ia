@@ -25,17 +25,16 @@ const SUGGESTIONS = [
 ];
 const MAX_CONTEXT_MESSAGES = 30;
 
-function Icon({ name }: { name: "sparkle" | "send" | "expand" | "download" | "reload" | "back" }) {
+function Icon({ name }: { name: "send" | "expand" | "download" | "reload" | "back" }) {
   const paths = {
-    sparkle: <path d="M12 1.8c.4 5.5 4.7 9.8 10.2 10.2-5.5.4-9.8 4.7-10.2 10.2C11.6 16.7 7.3 12.4 1.8 12 7.3 11.6 11.6 7.3 12 1.8Z" />,
     send: <><path d="m4 12 16-8-6.2 16-2.4-6.4L4 12Z" /><path d="m11.4 13.6 3.7-3.7" /></>,
     expand: <><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" /><path d="m3 8 6-6m12 6-6-6M3 16l6 6m12-6-6 6" /></>,
     download: <><path d="M12 3v12m0 0 5-5m-5 5-5-5" /><path d="M5 20h14" /></>,
     reload: <><path d="M20 7v5h-5" /><path d="M19 12a7 7 0 1 0-2 5" /></>,
     back: <><path d="m15 18-6-6 6-6" /><path d="M9 12h11" /></>,
   };
-  const filled = name === "sparkle";
-  return <svg viewBox="0 0 24 24" aria-hidden="true" className="size-5" fill={filled ? "currentColor" : "none"} stroke={filled ? "none" : "currentColor"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
+
+  return <svg viewBox="0 0 24 24" aria-hidden="true" className="size-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
 }
 
 function Markdown({ children }: { children: string }) {
@@ -231,33 +230,33 @@ export default function App() {
       <div className="orb orb-one" /><div className="orb orb-two" />
       <section className={`chat-pane ${isPreviewVisible ? "with-preview" : ""}`}>
         <header className="topbar">
-          <div className="brand-mark"><Icon name="sparkle" /></div>
-          <div className="brand-copy"><h1>Orbit XR</h1><p>Construye mundos WebXR conversando</p></div>
+          <div className="brand-mark"><img src="/university-logo.png" alt="Logo de la universidad" /></div>
+          <div className="brand-copy"><h1>ProfeIA</h1><p>Construye mundos WebXR conversando</p></div>
           {lastCompletedHtml && previewMode === "closed" && <button className="btn btn-sm btn-outline ml-auto" onClick={() => setPreviewMode("split")}>Abrir experiencia</button>}
-          <div className="status"><span /> Gemini conectado</div>
+          <div className="connection-status"><span /> Gemini conectado</div>
         </header>
 
         <div className="conversation">
           {messages.length === 0 ? (
             <div className="welcome">
-              <div className="welcome-icon"><Icon name="sparkle" /></div>
-              <p className="eyebrow">Laboratorio WebXR</p>
+              <div className="welcome-icon"><img src="/university-logo.png" alt="Logo de la universidad" /></div>
+              <p className="eyebrow">SpatialLab</p>
               <h2>Describe el mundo que quieres crear</h2>
-              <p>Orbit XR escribe la experiencia, te explica cada decisión y la muestra mientras se está construyendo.</p>
+              <p>ProfeIA escribe la experiencia, te explica cada decisión y la muestra mientras se está construyendo.</p>
               <div className="suggestions">{SUGGESTIONS.map((suggestion) => <button key={suggestion} onClick={() => void sendMessage(suggestion)}>{suggestion}</button>)}</div>
             </div>
           ) : (
             <div className="message-list" aria-live="polite">
               {messages.map((message) => (
                 <article key={message.id} className={`message ${message.role}`}>
-                  <div className="message-label">{message.role === "user" ? "Tú" : "Orbit XR"}</div>
+                  <div className="message-label">{message.role === "user" ? "Tú" : "ProfeIA"}</div>
                   <div className="message-card">
                     {message.html && <details className="code-disclosure"><summary>HTML generado <span>{message.html.length.toLocaleString()} caracteres</span></summary><pre><code>{message.html}</code></pre></details>}
                     <Markdown>{message.content}</Markdown>
                   </div>
                 </article>
               ))}
-              {isLoading && <article className="message model"><div className="message-label">Orbit XR</div><div className="message-card streaming-card">{streamingHtml && <details className="code-disclosure"><summary>Generando HTML…</summary><pre><code>{streamingHtml}</code></pre></details>}{streamingSummary ? <Markdown>{streamingSummary}</Markdown> : <div className="typing"><i /><i /><i /></div>}</div></article>}
+              {isLoading && <article className="message model"><div className="message-label">ProfeIA</div><div className="message-card streaming-card">{streamingHtml && <details className="code-disclosure"><summary>Generando HTML…</summary><pre><code>{streamingHtml}</code></pre></details>}{streamingSummary ? <Markdown>{streamingSummary}</Markdown> : <div className="typing"><i /><i /><i /></div>}</div></article>}
               <div ref={endRef} />
             </div>
           )}
@@ -287,7 +286,7 @@ export default function App() {
           {previewHtml ? (
             <iframe key={iframeKey} title="Experiencia WebXR generada" srcDoc={previewHtml} onLoad={handlePreviewLoaded} sandbox="allow-scripts allow-forms allow-pointer-lock allow-downloads" allow="xr-spatial-tracking; fullscreen; accelerometer; gyroscope" />
           ) : (
-            <div className="preview-placeholder" aria-hidden="true"><Icon name="sparkle" /></div>
+            <div className="preview-placeholder" aria-hidden="true"><img src="/university-logo.png" alt="Logo de la universidad" /></div>
           )}
           {isPreviewBuilding && <div className="build-overlay" role="status" aria-live="polite">
             <div className="liquid-lens"><span /><span /><span /></div>
@@ -300,3 +299,5 @@ export default function App() {
     </main>
   );
 }
+
+
