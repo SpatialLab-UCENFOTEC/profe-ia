@@ -8,6 +8,7 @@ const serverDirectory = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(serverDirectory, "../../.env") });
 
 const apiKey = process.env.GEMINI_API_KEY;
+const accessPassword = process.env.ACCESS_PASSWORD;
 const model = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 const port = Number(process.env.PORT) || 3000;
 
@@ -16,10 +17,16 @@ if (!apiKey) {
   process.exit(1);
 }
 
+if (!accessPassword) {
+  console.error("Falta ACCESS_PASSWORD en el archivo .env de la raíz.");
+  process.exit(1);
+}
+
 const clientDist = path.resolve(serverDirectory, "../../client/dist");
 const app = createApp({
   generateReply: createGeminiGenerator(apiKey, model),
   model,
+  accessPassword,
   clientDist,
 });
 

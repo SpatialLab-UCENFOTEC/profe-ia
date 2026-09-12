@@ -1,10 +1,41 @@
 import express, { type ErrorRequestHandler } from "express";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import path from "node:path";
 import type { ChatMessage, GenerateReply } from "./types.js";
 
 const MAX_MESSAGES = 30;
 const MAX_MESSAGE_LENGTH = 8_000;
 const MAX_HTML_LENGTH = 250_000;
+const SESSION_COOKIE = "profeia_session";
+const SESSION_DURATION_MS = 12 * 60 * 60 * 1000;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const MAX_LOGIN_ATTEMPTS = 5;
+
+interface Session {
+  expiresAt: number;
+}
+
+interface LoginAttempts {
+  count: number;
+  resetAt: number;
+}
+
+function hash(value: string) {
+  return createHash("sha256").update(value).digest();
+}
+
+function passwordsMatch(candidate: string, expected: string) {
+  return timingSafeEqual(hash(candidate), hash(expected));
+}
+
+function cookieValue(cookieHeader: string | undefined, name: string) {
+  if (!cookieHeader) return undefined;
+  for (const part of cookieHeader.split(";")) {
+    const [key, ...value] = part.trim().split("=");
+    if (key === name) return decodeURIComponent(value.join("="));
+  }
+  return undefined;
+}
 
 function parseMessages(value: unknown): ChatMessage[] | null {
   if (!Array.isArray(value) || value.length === 0 || value.length > MAX_MESSAGES) {
@@ -43,16 +74,82 @@ function streamEvent(type: "delta" | "done" | "error", payload: Record<string, u
 export interface AppOptions {
   generateReply: GenerateReply;
   model: string;
+  accessPassword: string;
   clientDist?: string;
 }
 
-export function createApp({ generateReply, model, clientDist }: AppOptions) {
+export function createApp({ generateReply, model, accessPassword, clientDist }: AppOptions) {
   const app = express();
+  const sessions = new Map<string, Session>();
+  const loginAttempts = new Map<string, LoginAttempts>();
   app.disable("x-powered-by");
   app.use(express.json({ limit: "512kb" }));
 
   app.get("/api/health", (_request, response) => {
     response.json({ ok: true, model });
+  });
+
+  const getSession = (request: express.Request) => {
+    const token = cookieValue(request.headers.cookie, SESSION_COOKIE);
+    if (!token) return undefined;
+    const session = sessions.get(token);
+    if (!session) return undefined;
+    if (session.expiresAt <= Date.now()) {
+      sessions.delete(token);
+      return undefined;
+    }
+    return session;
+  };
+
+  app.get("/api/auth/status", (request, response) => {
+    response.setHeader("Cache-Control", "no-store");
+    response.json({ authenticated: Boolean(getSession(request)) });
+  });
+
+  app.post("/api/auth/login", (request, response) => {
+    response.setHeader("Cache-Control", "no-store");
+    const clientKey = request.ip || "unknown";
+    const now = Date.now();
+    const attempts = loginAttempts.get(clientKey);
+    if (attempts && attempts.resetAt > now && attempts.count >= MAX_LOGIN_ATTEMPTS) {
+      response.setHeader("Retry-After", String(Math.ceil((attempts.resetAt - now) / 1000)));
+      response.status(429).json({ error: "Demasiados intentos. Espera unos minutos antes de volver a intentar." });
+      return;
+    }
+
+    const password = request.body?.password;
+    if (typeof password !== "string" || !passwordsMatch(password, accessPassword)) {
+      const current = attempts && attempts.resetAt > now ? attempts : { count: 0, resetAt: now + LOGIN_WINDOW_MS };
+      current.count += 1;
+      loginAttempts.set(clientKey, current);
+      response.status(401).json({ error: "Contraseña incorrecta." });
+      return;
+    }
+
+    loginAttempts.delete(clientKey);
+    const token = randomBytes(32).toString("base64url");
+    sessions.set(token, { expiresAt: now + SESSION_DURATION_MS });
+    response.setHeader(
+      "Set-Cookie",
+      `${SESSION_COOKIE}=${token}; HttpOnly; Path=/; SameSite=Strict; Max-Age=${SESSION_DURATION_MS / 1000}${process.env.NODE_ENV === "production" ? "; Secure" : ""}`,
+    );
+    response.json({ authenticated: true });
+  });
+
+  app.post("/api/auth/logout", (request, response) => {
+    const token = cookieValue(request.headers.cookie, SESSION_COOKIE);
+    if (token) sessions.delete(token);
+    response.setHeader("Set-Cookie", `${SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0`);
+    response.setHeader("Cache-Control", "no-store");
+    response.status(204).end();
+  });
+
+  app.use("/api/chat", (request, response, next) => {
+    if (!getSession(request)) {
+      response.status(401).json({ error: "Debes ingresar la contraseña para continuar." });
+      return;
+    }
+    next();
   });
 
   app.post("/api/chat", async (request, response, next) => {

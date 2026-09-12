@@ -10,11 +10,16 @@ Asistente full-stack que genera experiencias WebXR completas con Gemini, muestra
 - Preview lateral en escritorio y superpuesto en móvil, con recarga, expansión y descarga.
 - Historial mantenido durante la sesión abierta; el HTML vigente se utiliza como base para cambios posteriores.
 - API key de Gemini utilizada únicamente por el servidor.
+- Acceso protegido por contraseña con sesión segura en cookie `HttpOnly`.
 
 ## Requisitos
 
 - Node.js 20.19 o superior.
 - Una API key de [Google AI Studio](https://aistudio.google.com/app/apikey).
+
+## Configuración
+
+Copia `.env.example` como `.env` y configura `GEMINI_API_KEY` y `ACCESS_PASSWORD`. La contraseña se valida exclusivamente en el servidor y nunca se incluye en el bundle del cliente.
 - Para probar sesiones XR inmersivas: navegador y dispositivo compatibles, además de HTTPS o `localhost`. El usuario debe iniciar XR mediante un gesto explícito.
 - Conexión a Internet para las experiencias que carguen librerías, modelos o texturas desde CDN.
 

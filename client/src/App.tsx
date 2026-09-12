@@ -5,6 +5,7 @@ import { WebXrStreamParser, isCompleteHtmlDocument } from "./streamParser";
 
 type Role = "user" | "model";
 type PreviewMode = "closed" | "split" | "fullscreen";
+type AuthState = "checking" | "locked" | "authenticated";
 
 interface Message {
   id: string;
@@ -41,7 +42,54 @@ function Markdown({ children }: { children: string }) {
   return <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown></div>;
 }
 
+function AccessScreen({
+  password,
+  error,
+  isSubmitting,
+  onPasswordChange,
+  onSubmit,
+}: {
+  password: string;
+  error: string | null;
+  isSubmitting: boolean;
+  onPasswordChange: (password: string) => void;
+  onSubmit: (event: FormEvent) => void;
+}) {
+  return (
+    <main className="access-shell">
+      <div className="orb orb-one" /><div className="orb orb-two" />
+      <section className="access-card" aria-labelledby="access-title">
+        <div className="access-logo"><img src="/university-logo.png" alt="Logo de la universidad" /></div>
+        <p className="eyebrow">SpatialLab</p>
+        <h1 id="access-title">Acceso a ProfeIA</h1>
+        <p className="access-description">Ingresa la contraseña para comenzar a construir experiencias WebXR.</p>
+        <form onSubmit={onSubmit} className="access-form">
+          <label htmlFor="access-password">Contraseña</label>
+          <input
+            id="access-password"
+            type="password"
+            autoComplete="current-password"
+            autoFocus
+            required
+            value={password}
+            onChange={(event) => onPasswordChange(event.target.value)}
+            disabled={isSubmitting}
+          />
+          {error && <p role="alert" className="access-error">{error}</p>}
+          <button type="submit" disabled={isSubmitting || !password}>
+            {isSubmitting ? "Verificando…" : "Ingresar"}
+          </button>
+        </form>
+      </section>
+    </main>
+  );
+}
+
 export default function App() {
+  const [authState, setAuthState] = useState<AuthState>("checking");
+  const [password, setPassword] = useState("");
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -59,6 +107,22 @@ export default function App() {
   const buildStartedAtRef = useRef(0);
   const awaitingFinalLoadRef = useRef(false);
   const buildFinishTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/auth/status", { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error();
+        const data = await response.json() as { authenticated?: boolean };
+        setAuthState(data.authenticated ? "authenticated" : "locked");
+      })
+      .catch((statusError: unknown) => {
+        if (statusError instanceof DOMException && statusError.name === "AbortError") return;
+        setAuthError("No se pudo conectar con el servidor. Inténtalo de nuevo.");
+        setAuthState("locked");
+      });
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -177,6 +241,11 @@ export default function App() {
       });
       if (!response.ok) {
         const data = await response.json().catch(() => ({})) as { error?: string };
+        if (response.status === 401) {
+          setPassword("");
+          setAuthError(data.error || "Tu sesión venció. Ingresa la contraseña nuevamente.");
+          setAuthState("locked");
+        }
         throw new Error(data.error || "No se pudo completar la solicitud.");
       }
       await processStream(response, nextMessages);
@@ -191,6 +260,28 @@ export default function App() {
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
     void sendMessage(input);
+  };
+
+  const handleAccessSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!password || isAuthenticating) return;
+    setIsAuthenticating(true);
+    setAuthError(null);
+    try {
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      const data = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(data.error || "No se pudo verificar la contraseña.");
+      setPassword("");
+      setAuthState("authenticated");
+    } catch (caughtError) {
+      setAuthError(caughtError instanceof Error ? caughtError.message : "Ocurrió un error inesperado.");
+    } finally {
+      setIsAuthenticating(false);
+    }
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -224,6 +315,14 @@ export default function App() {
 
   const previewHtml = currentHtml || lastCompletedHtml;
   const isPreviewVisible = previewMode !== "closed" && (Boolean(previewHtml) || isPreviewBuilding);
+
+  if (authState === "checking") {
+    return <main className="access-shell"><div className="access-loader" role="status" aria-label="Verificando acceso" /></main>;
+  }
+
+  if (authState === "locked") {
+    return <AccessScreen password={password} error={authError} isSubmitting={isAuthenticating} onPasswordChange={setPassword} onSubmit={handleAccessSubmit} />;
+  }
 
   return (
     <main className="app-shell">
@@ -299,5 +398,3 @@ export default function App() {
     </main>
   );
 }
-
-
