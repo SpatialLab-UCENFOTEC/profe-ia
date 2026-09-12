@@ -17,13 +17,12 @@ Asistente full-stack que genera experiencias WebXR completas con Gemini, muestra
 - Node.js 20.19 o superior.
 - Una API key de [Google AI Studio](https://aistudio.google.com/app/apikey).
 
-## Configuración
+## Configuración local
 
 Copia `.env.example` como `.env` y configura `GEMINI_API_KEY` y `ACCESS_PASSWORD`. La contraseña se valida exclusivamente en el servidor y nunca se incluye en el bundle del cliente.
+
 - Para probar sesiones XR inmersivas: navegador y dispositivo compatibles, además de HTTPS o `localhost`. El usuario debe iniciar XR mediante un gesto explícito.
 - Conexión a Internet para las experiencias que carguen librerías, modelos o texturas desde CDN.
-
-## Configuración
 
 1. Instala las dependencias:
 
@@ -36,6 +35,7 @@ Copia `.env.example` como `.env` y configura `GEMINI_API_KEY` y `ACCESS_PASSWORD
    ```env
    GEMINI_API_KEY=tu_api_key
    GEMINI_MODEL=gemini-3.6-flash
+   ACCESS_PASSWORD=una_contraseña_larga_y_segura
    PORT=3000
    ```
 
@@ -56,6 +56,40 @@ npm start
 ```
 
 El servidor de producción entrega la aplicación compilada en `http://localhost:3000`.
+
+## Despliegue en Railway
+
+El repositorio está preparado para desplegarse como **un único servicio**: Railway compila el cliente y el servidor, y Express sirve tanto la API como los archivos estáticos. La configuración en `railway.json` define Railpack, los comandos de build y arranque, el healthcheck y la política de reinicio.
+
+### Desde GitHub
+
+1. Sube el repositorio a GitHub y elige **New Project → Deploy from GitHub repo** en Railway.
+2. Selecciona este repositorio. Mantén el directorio raíz del servicio en `/`; no crees servicios separados para `client` y `server`.
+3. En **Variables**, agrega:
+
+   ```env
+   GEMINI_API_KEY=tu_api_key_real
+   ACCESS_PASSWORD=una_contraseña_larga_y_segura
+   GEMINI_MODEL=gemini-3.6-flash
+   ```
+
+   `GEMINI_MODEL` es opcional. No definas `PORT`: Railway lo asigna automáticamente.
+4. En **Settings → Networking**, genera un dominio público. Railway volverá a desplegar automáticamente con cada push a la rama conectada.
+
+### Desde la CLI
+
+Con la [CLI de Railway](https://docs.railway.com/cli) instalada y autenticada, ejecuta desde la raíz:
+
+```bash
+railway init
+railway variables set GEMINI_API_KEY=tu_api_key_real ACCESS_PASSWORD=una_contraseña_larga_y_segura
+railway up
+railway domain
+```
+
+Comprueba el despliegue en `https://TU-DOMINIO/api/health`. Debe responder con `{ "ok": true, ... }`.
+
+> Las sesiones se guardan en memoria. Se cierran al reiniciar o volver a desplegar el servicio; para este proyecto conviene mantener una sola réplica, salvo que se añada un almacén de sesiones compartido.
 
 ## API
 
