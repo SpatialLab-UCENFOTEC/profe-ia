@@ -2,6 +2,7 @@ import express, { type ErrorRequestHandler } from "express";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import path from "node:path";
 import type { ChatMessage, GenerateReply } from "./types.js";
+import { instrumentGeneratedResponse } from "./previewMonitor.js";
 
 const MAX_MESSAGES = 30;
 const MAX_MESSAGE_LENGTH = 8_000;
@@ -67,7 +68,7 @@ function parseCurrentHtml(value: unknown): string | undefined | null {
   return value;
 }
 
-function streamEvent(type: "delta" | "done" | "error", payload: Record<string, unknown> = {}) {
+function streamEvent(type: "delta" | "final" | "done" | "error", payload: Record<string, unknown> = {}) {
   return `${JSON.stringify({ type, ...payload })}\n`;
 }
 
@@ -166,7 +167,6 @@ export function createApp({ generateReply, model, accessPassword, clientDist }: 
       const stream = await generateReply(messages, currentHtml);
       const iterator = stream[Symbol.asyncIterator]();
       const first = await iterator.next();
-
       if (first.done || !first.value) {
         throw new Error("Gemini devolvió una respuesta vacía.");
       }
@@ -177,26 +177,18 @@ export function createApp({ generateReply, model, accessPassword, clientDist }: 
       response.setHeader("X-Content-Type-Options", "nosniff");
       response.flushHeaders();
 
-      let emittedText = false;
-      const writeChunk = (chunk: string) => {
-        if (!chunk) return;
-        emittedText = true;
-        response.write(streamEvent("delta", { text: chunk }));
-      };
-
-      writeChunk(first.value);
+      let completedResponse = first.value;
+      response.write(streamEvent("delta", { text: first.value }));
       try {
         while (true) {
           const result = await iterator.next();
           if (result.done) break;
-          writeChunk(result.value);
+          completedResponse += result.value;
+          response.write(streamEvent("delta", { text: result.value }));
         }
-
-        if (!emittedText) {
-          response.write(streamEvent("error", { message: "Gemini devolvió una respuesta vacía." }));
-        } else {
-          response.write(streamEvent("done"));
-        }
+        const instrumentedResponse = instrumentGeneratedResponse(completedResponse);
+        response.write(streamEvent("final", { text: instrumentedResponse }));
+        response.write(streamEvent("done"));
       } catch (error) {
         console.error("Error durante la respuesta incremental:", error);
         response.write(streamEvent("error", {

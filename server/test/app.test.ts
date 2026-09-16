@@ -56,8 +56,25 @@ describe("API del asistente WebXR", () => {
     assert.deepEqual(eventsFrom(response.text), [
       { type: "delta", text: "Recibí: Hola" },
       { type: "delta", text: " con 13 caracteres" },
+      { type: "final", text: "Recibí: Hola con 13 caracteres" },
       { type: "done" },
     ]);
+  });
+
+  it("mantiene el streaming visual sin ejecutar HTML hasta enviar la versión instrumentada", async () => {
+    const document = "<!doctype html><html><head></head><body><main>XR</main></body></html>";
+    const rawResponse = `<webxr-html>${document}</webxr-html><assistant-response>Listo</assistant-response>`;
+    const app = testApp(async () => chunks(rawResponse.slice(0, 45), rawResponse.slice(45)));
+    const agent = await authenticatedAgent(app);
+    const response = await agent.post("/api/chat").send({ messages: [{ role: "user", content: "Crea XR" }] }).expect(200);
+    const events = eventsFrom(response.text);
+
+    assert.equal(events[0]?.type, "delta");
+    assert.equal(events[1]?.type, "delta");
+    assert.doesNotMatch(String(events[0]?.text) + String(events[1]?.text), /profeia-preview-monitor/);
+    assert.equal(events[2]?.type, "final");
+    assert.match(String(events[2]?.text), /profeia-preview-monitor/);
+    assert.deepEqual(events[3], { type: "done" });
   });
 
   it("rechaza historiales y HTML actual inválidos", async () => {
@@ -75,7 +92,7 @@ describe("API del asistente WebXR", () => {
     assert.doesNotMatch(response.body.error, /secreto interno/);
   });
 
-  it("emite un evento seguro si el proveedor falla durante el stream", async () => {
+  it("emite un error seguro si el proveedor falla durante el streaming", async () => {
     async function* interruptedStream() {
       yield "inicio";
       throw new Error("secreto durante stream");

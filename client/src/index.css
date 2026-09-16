@@ -105,6 +105,16 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .send-button { display: grid; place-items: center; width: 46px; height: 46px; flex: none; color: white; border: 0; border-radius: 13px; background: linear-gradient(145deg, #006AEA, #164A98); box-shadow: 0 8px 20px rgb(0 106 234 / .28); }
 .error-banner { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 9px; padding: 10px 13px; color: #ffc6c2; border: 1px solid rgb(255 107 98 / .25); border-radius: 12px; background: rgb(110 31 29 / .35); font-size: 12px; }
 .error-banner button { color: inherit; border: 0; background: transparent; }
+.corrections-disclosure { margin-top: 14px; overflow: hidden; color: #176b43; border: 1px solid rgb(34 197 94 / .28); border-radius: 12px; background: rgb(34 197 94 / .08); }
+.corrections-disclosure summary { display: flex; align-items: center; gap: 8px; padding: 10px 12px; color: #15803d; font-size: 12px; font-weight: 700; cursor: pointer; list-style: none; }
+.corrections-disclosure summary::-webkit-details-marker { display: none; }
+.corrections-disclosure summary svg { width: 17px; height: 17px; flex: none; }
+.corrections-disclosure summary small { display: grid; place-items: center; min-width: 20px; height: 20px; margin-left: auto; padding: 0 6px; color: #166534; border-radius: 999px; background: rgb(34 197 94 / .16); font-size: 10px; }
+.corrections-list { padding: 0 12px 12px; }
+.corrections-list section { padding: 10px 12px; color: #286749; border-top: 1px solid rgb(34 197 94 / .16); font-size: 12px; line-height: 1.55; }
+.corrections-list section > strong { display: block; margin-bottom: 5px; color: #166534; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.corrections-list .markdown > :first-child { margin-top: 0; }
+.corrections-list .markdown > :last-child { margin-bottom: 0; }
 
 .preview-panel { position: relative; z-index: 3; flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column; padding: 12px; background: #edf3fc; animation: reveal .28s ease both; }
 .preview-toolbar { height: 48px; flex: none; display: flex; align-items: center; justify-content: space-between; padding: 0 5px 0 10px; color: #164A98; }
