@@ -3,6 +3,7 @@ export type PreviewDiagnosticType =
   | "unhandled-rejection"
   | "resource-error"
   | "startup-timeout"
+  | "missing-response"
   | "experience-ready";
 
 export interface PreviewDiagnostic {
@@ -42,6 +43,8 @@ export function classifyPreviewDiagnostic(diagnostic: PreviewDiagnostic): Classi
     summary = "La experiencia inició correctamente.";
   } else if (diagnostic.type === "startup-timeout") {
     summary = "La experiencia no informó que estuviera lista dentro del tiempo esperado.";
+  } else if (diagnostic.type === "missing-response") {
+    summary = "El código de la experiencia está completo, pero falta la respuesta visible para el usuario. Devuelve también un bloque <assistant-response> completo que explique qué se creó o cambió y cómo usarlo.";
   } else if (diagnostic.type === "resource-error") {
     const fatalResource = tag === "SCRIPT" || tag === "A-ASSET-ITEM" ||
       (tag === "LINK" && (rel === "stylesheet" || rel === "modulepreload"));

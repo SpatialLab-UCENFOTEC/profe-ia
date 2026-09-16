@@ -20,6 +20,19 @@ interface Message {
 
 type PreviewStatus = "idle" | "generating" | "checking" | "ready" | "repairing" | "repair-failed";
 
+type DevScenarioId = "success" | "missing-response" | "missing-code" | "empty" | "corrections" | "generating" | "repair-failed";
+
+interface DevScenario {
+  id: DevScenarioId;
+  label: string;
+  question: string;
+  response?: string;
+  html?: string;
+  corrections?: string[];
+  status: PreviewStatus;
+  error?: string;
+}
+
 type StreamEvent =
   | { type: "delta"; text: string }
   | { type: "final"; text: string }
@@ -34,6 +47,22 @@ const SUGGESTIONS = [
 const MAX_CONTEXT_MESSAGES = 30;
 const MAX_REPAIR_ATTEMPTS = 2;
 const PREVIEW_STARTUP_TIMEOUT_MS = 12_000;
+const DEV_EXPERIENCE_HTML = `<!doctype html>
+<html lang="es">
+<head><meta charset="utf-8"><title>Experiencia de auditoría</title></head>
+<body style="margin:0;display:grid;place-items:center;min-height:100vh;background:radial-gradient(circle at top,#164a98,#08090f);color:white;font-family:system-ui">
+  <main style="text-align:center"><div style="font-size:5rem">🪐</div><h1>Sistema solar interactivo</h1><p>Arrastra para explorar la escena.</p></main>
+</body>
+</html>`;
+const DEV_SCENARIOS: DevScenario[] = [
+  { id: "success", label: "Código + respuesta", question: "Crea un sistema solar interactivo.", response: "Creé un sistema solar interactivo. Arrastra para rotar la vista y selecciona un planeta para conocerlo.", html: DEV_EXPERIENCE_HTML, status: "ready" },
+  { id: "missing-response", label: "Sin respuesta", question: "Crea un sistema solar interactivo.", html: DEV_EXPERIENCE_HTML, status: "repairing" },
+  { id: "missing-code", label: "Sin código", question: "Crea un sistema solar interactivo.", response: "Preparé la experiencia solicitada, pero la respuesta no incluyó el documento HTML.", status: "idle", error: "La respuesta no contiene el código de la experiencia solicitado." },
+  { id: "empty", label: "Sin ninguno", question: "Crea un sistema solar interactivo.", status: "idle", error: "El modelo no devolvió código ni una respuesta para mostrar." },
+  { id: "corrections", label: "Con correcciones", question: "Crea un sistema solar interactivo.", response: "La experiencia está lista. Arrastra para explorar y selecciona los planetas para ver sus datos.", html: DEV_EXPERIENCE_HTML, corrections: ["Se corrigió una referencia inexistente al control de cámara.", "Se añadió una alternativa cuando WebXR no está disponible."], status: "ready" },
+  { id: "generating", label: "Generando", question: "Crea un sistema solar interactivo.", response: "Estoy preparando la escena y sus interacciones…", html: DEV_EXPERIENCE_HTML.slice(0, 330), status: "generating" },
+  { id: "repair-failed", label: "Corrección fallida", question: "Crea una experiencia con modelos 3D externos.", response: "Creé una galería inmersiva con modelos 3D.", html: DEV_EXPERIENCE_HTML, status: "repair-failed", error: "La experiencia sigue presentando errores después de dos intentos automáticos. Revisa los detalles o solicita un cambio manual." },
+];
 
 function Icon({ name }: { name: "send" | "expand" | "download" | "reload" | "back" }) {
   const paths = {
@@ -220,7 +249,20 @@ export default function App() {
       if (event.type === "final") {
         const finalParser = new WebXrStreamParser();
         finalParser.push(event.text);
-        finalizedResult = finalParser.finish();
+        const finalSnapshot = finalParser.snapshot();
+        try {
+          finalizedResult = finalParser.finish();
+        } catch (parseError) {
+          const hasUsableHtml = finalSnapshot.htmlComplete && isCompleteHtmlDocument(finalSnapshot.html);
+          const isMissingResponse = !finalSnapshot.responseComplete || !finalSnapshot.response.trim();
+          if (!hasUsableHtml || !isMissingResponse) throw parseError;
+
+          const completedHtml = finalSnapshot.html.trim();
+          finalizedResult = { html: completedHtml, response: "" };
+          commitCompletedHtml(completedHtml);
+          handleDiagnosticRef.current({ type: "missing-response", details: {} });
+          return;
+        }
         const modelMessage: Message = {
           id: crypto.randomUUID(),
           role: "model",
@@ -256,7 +298,7 @@ export default function App() {
       if (!finalizedResult) throw new Error("El servidor no confirmó la versión final de la experiencia.");
       const result = finalizedResult;
       setStreamingSummary("");
-      if (!finalMessageStored) {
+      if (!finalMessageStored && result.response) {
         setMessages([...nextMessages, { id: crypto.randomUUID(), role: "model", content: result.response, html: result.html }]);
       }
     } catch (streamError) {
@@ -427,6 +469,53 @@ export default function App() {
     }
   };
 
+  const loadDevScenario = (scenario: DevScenario) => {
+    if (!import.meta.env.DEV || isLoadingRef.current) return;
+    if (previewTimeoutRef.current) clearTimeout(previewTimeoutRef.current);
+    if (repairTimerRef.current) clearTimeout(repairTimerRef.current);
+    awaitingFinalLoadRef.current = false;
+    repairAttemptRef.current = scenario.status === "repair-failed" ? MAX_REPAIR_ATTEMPTS : 0;
+    diagnosticSignaturesRef.current.clear();
+    fatalDiagnosticsRef.current = [];
+    correctionResponsesRef.current = scenario.corrections ?? [];
+    pendingMessageIdRef.current = undefined;
+    originalMessageIdRef.current = undefined;
+
+    const userMessage: Message = { id: crypto.randomUUID(), role: "user", content: scenario.question };
+    const scenarioMessages = [userMessage];
+    if (scenario.response) {
+      scenarioMessages.push({
+        id: crypto.randomUUID(),
+        role: "model",
+        content: scenario.response,
+        html: scenario.status === "generating" ? undefined : scenario.html,
+        corrections: scenario.corrections,
+      });
+    }
+    setMessages(scenarioMessages);
+    setInput("");
+    setError(scenario.error ?? null);
+    setStreamingSummary(scenario.status === "generating" ? scenario.response ?? "" : "");
+    setStreamingHtml(scenario.status === "generating" ? scenario.html ?? null : null);
+    const completedHtml = scenario.status === "generating" ? "" : scenario.html ?? "";
+    setCurrentHtml(completedHtml);
+    setLastCompletedHtml(scenario.status === "ready" ? completedHtml : "");
+    currentCandidateRef.current = completedHtml;
+    setPreviewStatus(scenario.status);
+    setIsPreviewBuilding(["generating", "repairing", "repair-failed"].includes(scenario.status));
+    setPreviewMode(scenario.html ? "split" : "closed");
+    setPreviewRunId(crypto.randomUUID());
+    setIframeKey(key => key + 1);
+
+    const diagnostic = scenario.id === "missing-response"
+      ? classifyPreviewDiagnostic({ type: "missing-response", details: {} })
+      : scenario.id === "repair-failed"
+        ? classifyPreviewDiagnostic({ type: "runtime-error", details: { message: "ReferenceError: XRController is not defined", filename: "experience.html", line: 42 } })
+        : undefined;
+    setPreviewDiagnostics(diagnostic ? [diagnostic] : []);
+    if (diagnostic) fatalDiagnosticsRef.current = [diagnostic];
+  };
+
   const downloadHtml = () => {
     if (!lastCompletedHtml) return;
     const url = URL.createObjectURL(new Blob([lastCompletedHtml], { type: "text/html;charset=utf-8" }));
@@ -482,6 +571,13 @@ export default function App() {
   return (
     <main className="app-shell">
       <div className="orb orb-one" /><div className="orb orb-two" />
+      {import.meta.env.DEV && <details className="dev-audit-panel">
+        <summary>Auditar estados</summary>
+        <div>
+          <p>Respuestas locales predefinidas</p>
+          {DEV_SCENARIOS.map(scenario => <button type="button" key={scenario.id} onClick={() => loadDevScenario(scenario)} disabled={isLoading}>{scenario.label}</button>)}
+        </div>
+      </details>}
       <section className={`chat-pane ${isPreviewVisible ? "with-preview" : ""}`}>
         <header className="topbar">
           <a className="brand-mark" href="/" aria-label="Volver al inicio de ProfeIA" title="Volver al inicio"><img src="/university-logo.png" alt="Logo de la universidad" /></a>

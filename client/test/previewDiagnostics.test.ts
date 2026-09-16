@@ -25,4 +25,11 @@ describe("clasificación de errores de preview", () => {
     const fatal = classifyPreviewDiagnostic({ type: "unhandled-rejection", details: { message: "c.easing is not a function" } });
     assert.match(errorsPrompt([fatal]), /^<ERRORS>[\s\S]*c\.easing is not a function[\s\S]*<\/ERRORS>$/);
   });
+
+  it("envía la falta de respuesta visible al mismo flujo de autorreparación", () => {
+    const missingResponse = classifyPreviewDiagnostic({ type: "missing-response", details: {} });
+
+    assert.equal(missingResponse.severity, "fatal");
+    assert.match(errorsPrompt([missingResponse]), /<assistant-response> completo/);
+  });
 });
