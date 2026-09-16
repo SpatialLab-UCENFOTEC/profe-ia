@@ -1,6 +1,7 @@
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { rehypeCollapsibleHeadings } from "./collapsibleHeadings";
 import { WebXrStreamParser, isCompleteHtmlDocument } from "./streamParser";
 
 type Role = "user" | "model";
@@ -38,8 +39,8 @@ function Icon({ name }: { name: "send" | "expand" | "download" | "reload" | "bac
   return <svg viewBox="0 0 24 24" aria-hidden="true" className="size-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
 }
 
-function Markdown({ children }: { children: string }) {
-  return <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown></div>;
+function Markdown({ children, collapsible = false }: { children: string; collapsible?: boolean }) {
+  return <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={collapsible ? [rehypeCollapsibleHeadings] : []}>{children}</ReactMarkdown></div>;
 }
 
 function AccessScreen({
@@ -329,10 +330,10 @@ export default function App() {
       <div className="orb orb-one" /><div className="orb orb-two" />
       <section className={`chat-pane ${isPreviewVisible ? "with-preview" : ""}`}>
         <header className="topbar">
-          <div className="brand-mark"><img src="/university-logo.png" alt="Logo de la universidad" /></div>
+          <a className="brand-mark" href="/" aria-label="Volver al inicio de ProfeIA" title="Volver al inicio"><img src="/university-logo.png" alt="Logo de la universidad" /></a>
           <div className="brand-copy"><h1>ProfeIA</h1><p>Construye mundos WebXR conversando</p></div>
           {lastCompletedHtml && previewMode === "closed" && <button className="btn btn-sm btn-outline ml-auto" onClick={() => setPreviewMode("split")}>Abrir experiencia</button>}
-          <div className="connection-status"><span /> Gemini conectado</div>
+          <div className="connection-status"><span />Conectado con LLM</div>
         </header>
 
         <div className="conversation">
@@ -351,11 +352,11 @@ export default function App() {
                   <div className="message-label">{message.role === "user" ? "Tú" : "ProfeIA"}</div>
                   <div className="message-card">
                     {message.html && <details className="code-disclosure"><summary>HTML generado <span>{message.html.length.toLocaleString()} caracteres</span></summary><pre><code>{message.html}</code></pre></details>}
-                    <Markdown>{message.content}</Markdown>
+                    <Markdown collapsible={message.role === "model"}>{message.content}</Markdown>
                   </div>
                 </article>
               ))}
-              {isLoading && <article className="message model"><div className="message-label">ProfeIA</div><div className="message-card streaming-card">{streamingHtml && <details className="code-disclosure"><summary>Generando HTML…</summary><pre><code>{streamingHtml}</code></pre></details>}{streamingSummary ? <Markdown>{streamingSummary}</Markdown> : <div className="typing"><i /><i /><i /></div>}</div></article>}
+              {isLoading && <article className="message model"><div className="message-label">ProfeIA</div><div className="message-card streaming-card">{streamingHtml && <details className="code-disclosure"><summary>Generando HTML…</summary><pre><code>{streamingHtml}</code></pre></details>}{streamingSummary ? <Markdown collapsible>{streamingSummary}</Markdown> : <div className="typing"><i /><i /><i /></div>}</div></article>}
               <div ref={endRef} />
             </div>
           )}

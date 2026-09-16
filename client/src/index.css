@@ -212,3 +212,16 @@ button:focus-visible, summary:focus-visible { outline: 3px solid var(--brand-pri
 }
 
 .topbar { flex-shrink: 0; }
+
+.brand-mark:focus-visible { outline: 3px solid var(--brand-primary); outline-offset: 4px; border-radius: 6px; }
+
+/* Native disclosures support mouse and keyboard navigation. */
+.markdown-section { margin: .6em 0; border: 1px solid rgb(22 74 152 / .16); border-radius: 10px; background: #f5f8fd; }
+.markdown-section > summary { padding: 10px 12px; cursor: pointer; color: var(--brand-dark); border-radius: 9px; }
+.markdown-section > summary:hover { background: #e8f2ff; }
+.markdown-section > summary::marker { color: var(--brand-primary); }
+.markdown-section > summary > :is(h1, h2, h3, h4, h5, h6) { display: inline; margin: 0; font-size: 1em; line-height: 1.5; font-weight: 700; }
+.markdown-section[open] > summary { border-bottom: 1px solid rgb(22 74 152 / .12); border-radius: 9px 9px 0 0; }
+.markdown-section-content { padding: 10px 12px; }
+.markdown-section-content > :first-child { margin-top: 0; }
+.markdown-section-content > :last-child { margin-bottom: 0; }
