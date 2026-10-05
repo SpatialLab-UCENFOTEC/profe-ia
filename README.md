@@ -4,8 +4,9 @@ Asistente full-stack que genera experiencias WebXR completas con Gemini, muestra
 
 ## Funciones
 
-- Generación con A-Frame, Three.js o ambos según las necesidades de la experiencia.
-- Respuesta incremental NDJSON y preview actualizado durante el stream.
+- Generación rápida de escenas A-Frame a partir de una descripción compacta: el servidor ensambla un HTML completo con controles de escritorio y XR, interfaz e interacciones comunes.
+- Generación HTML libre con A-Frame, Three.js o ambos cuando la experiencia necesita lógica que no cubre el motor de escenas.
+- Respuesta NDJSON incremental; el HTML libre se muestra mientras se genera y la escena compacta se ensambla al terminar su descripción.
 - Documento HTML completo en un bloque plegable, seguido de una explicación Markdown.
 - Preview lateral en escritorio y superpuesto en móvil, con recarga, expansión y descarga.
 - Historial mantenido durante la sesión abierta; el HTML vigente se utiliza como base para cambios posteriores.
@@ -97,3 +98,9 @@ Comprueba el despliegue en `https://TU-DOMINIO/api/health`. Debe responder con `
 - `POST /api/chat`: recibe `{ "messages": [...], "currentHtml": "..." }` y transmite líneas NDJSON con eventos `delta`, `done` o `error`.
 
 El cliente conserva únicamente resúmenes en el historial enviado al modelo y adjunta por separado la última versión HTML terminada. No se utiliza base de datos ni almacenamiento persistente del navegador.
+
+## Motor de escenas
+
+El modelo puede producir una escena JSON en `<webxr-scene>`. El servidor valida sus objetos y referencias, inserta el contenido en una plantilla A-Frame y entrega al cliente el mismo formato `<webxr-html>` que ya usa para la vista previa y la descarga. La plantilla incluye controles, interfaz, iluminación, suelo e interacciones de información, cambio de color, visibilidad y giro. La especificación queda dentro del HTML final para que una solicitud posterior pueda modificarla sin volver a enviar todo el documento al modelo.
+
+Cuando la solicitud requiere mecánicas fuera de ese esquema, el modelo genera el HTML completo como antes. Si devuelve una escena compacta inválida, el servidor solicita una versión HTML libre antes de responder al cliente. La vista previa y su reparación automática se aplican a ambas rutas.
