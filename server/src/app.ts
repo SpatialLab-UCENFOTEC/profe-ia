@@ -72,6 +72,16 @@ function streamEvent(type: "delta" | "final" | "done" | "error", payload: Record
   return `${JSON.stringify({ type, ...payload })}\n`;
 }
 
+function hasValidAssistantResponse(value: string) {
+  const matches = [...value.matchAll(/<assistant-response>([\s\S]*?)<\/assistant-response>/gi)];
+  return matches.length === 1 && Boolean(matches[0][1].trim()) &&
+    value.split("<assistant-response>").length === 2 && value.split("</assistant-response>").length === 2;
+}
+
+function extractAssistantResponse(value: string) {
+  return value.match(/<assistant-response>[\s\S]*?<\/assistant-response>/i)?.[0] ?? "";
+}
+
 export interface AppOptions {
   generateReply: GenerateReply;
   model: string;
@@ -186,6 +196,26 @@ export function createApp({ generateReply, model, accessPassword, clientDist }: 
           completedResponse += result.value;
           response.write(streamEvent("delta", { text: result.value }));
         }
+
+        if (!hasValidAssistantResponse(completedResponse)) {
+          const summaryMessages: ChatMessage[] = [
+            ...messages.slice(-1),
+            { role: "model", content: completedResponse },
+            {
+              role: "user",
+              content: "Tu respuesta anterior no incluyó un bloque <assistant-response> válido y completo con un resumen no vacío. Conserva exactamente la experiencia ya generada; no la vuelvas a generar ni la modifiques. Devuelve únicamente este formato, con un resumen breve que explique qué se creó o cambió, cómo interactuar con la experiencia y los requisitos relevantes: <assistant-response>resumen en Markdown</assistant-response>.",
+            },
+          ];
+          const summaryStream = await generateReply(summaryMessages, currentHtml);
+          let summaryText = "";
+          for await (const chunk of summaryStream) summaryText += chunk;
+          const summaryBlock = extractAssistantResponse(summaryText);
+          if (hasValidAssistantResponse(summaryBlock)) {
+            completedResponse += `\n${summaryBlock}`;
+            response.write(streamEvent("delta", { text: `\n${summaryBlock}` }));
+          }
+        }
+
         const instrumentedResponse = instrumentGeneratedResponse(completedResponse);
         response.write(streamEvent("final", { text: instrumentedResponse }));
         response.write(streamEvent("done"));
