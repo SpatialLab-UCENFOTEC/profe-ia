@@ -3,6 +3,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import path from "node:path";
 import type { ChatMessage, GenerateReply } from "./types.js";
 import { instrumentGeneratedResponse } from "./previewMonitor.js";
+import { createRateLimiter } from "./rateLimit.js";
 
 const MAX_MESSAGES = 30;
 const MAX_MESSAGE_LENGTH = 8_000;
@@ -10,15 +11,16 @@ const MAX_HTML_LENGTH = 250_000;
 const SESSION_COOKIE = "profeia_session";
 const SESSION_DURATION_MS = 12 * 60 * 60 * 1000;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
-const MAX_LOGIN_ATTEMPTS = 5;
+// Un aula entera suele salir a Internet por la misma IP: el límite tiene que aguantar
+// varios errores de tipeo sin dejar afuera a todos.
+const MAX_LOGIN_ATTEMPTS = 20;
+const CHAT_SESSION_WINDOW_MS = 15 * 60 * 1000;
+const CHAT_GLOBAL_WINDOW_MS = 60 * 60 * 1000;
+export const DEFAULT_CHAT_REQUESTS_PER_SESSION = 30;
+export const DEFAULT_CHAT_REQUESTS_PER_HOUR = 300;
 
 interface Session {
   expiresAt: number;
-}
-
-interface LoginAttempts {
-  count: number;
-  resetAt: number;
 }
 
 function hash(value: string) {
@@ -87,18 +89,43 @@ export interface AppOptions {
   model: string;
   accessPassword: string;
   clientDist?: string;
+  /**
+   * Header con la IP real del cliente que pone el proxy de entrada (en Railway, `x-real-ip`).
+   * Sin él, los límites usan la IP del socket, que detrás de un proxy es la del proxy.
+   */
+  clientIpHeader?: string;
+  /** Solicitudes a /api/chat por sesión cada 15 minutos. */
+  chatRequestsPerSession?: number;
+  /** Solicitudes a /api/chat por hora sumando todas las sesiones: el techo de uso de Gemini. */
+  chatRequestsPerHour?: number;
 }
 
-export function createApp({ generateReply, model, accessPassword, clientDist }: AppOptions) {
+export function createApp({
+  generateReply,
+  model,
+  accessPassword,
+  clientDist,
+  clientIpHeader,
+  chatRequestsPerSession = DEFAULT_CHAT_REQUESTS_PER_SESSION,
+  chatRequestsPerHour = DEFAULT_CHAT_REQUESTS_PER_HOUR,
+}: AppOptions) {
   const app = express();
   const sessions = new Map<string, Session>();
-  const loginAttempts = new Map<string, LoginAttempts>();
+  const loginLimiter = createRateLimiter(MAX_LOGIN_ATTEMPTS, LOGIN_WINDOW_MS);
+  const sessionChatLimiter = createRateLimiter(chatRequestsPerSession, CHAT_SESSION_WINDOW_MS);
+  const globalChatLimiter = createRateLimiter(chatRequestsPerHour, CHAT_GLOBAL_WINDOW_MS);
+  const ipHeader = clientIpHeader?.trim().toLowerCase() || undefined;
   app.disable("x-powered-by");
   app.use(express.json({ limit: "512kb" }));
 
   app.get("/api/health", (_request, response) => {
     response.json({ ok: true, model });
   });
+
+  const clientIp = (request: express.Request) => {
+    const forwarded = ipHeader ? request.get(ipHeader)?.split(",")[0]?.trim() : undefined;
+    return forwarded || request.socket.remoteAddress || "unknown";
+  };
 
   const getSession = (request: express.Request) => {
     const token = cookieValue(request.headers.cookie, SESSION_COOKIE);
@@ -119,25 +146,23 @@ export function createApp({ generateReply, model, accessPassword, clientDist }: 
 
   app.post("/api/auth/login", (request, response) => {
     response.setHeader("Cache-Control", "no-store");
-    const clientKey = request.ip || "unknown";
+    const clientKey = clientIp(request);
     const now = Date.now();
-    const attempts = loginAttempts.get(clientKey);
-    if (attempts && attempts.resetAt > now && attempts.count >= MAX_LOGIN_ATTEMPTS) {
-      response.setHeader("Retry-After", String(Math.ceil((attempts.resetAt - now) / 1000)));
+    const retryAfter = loginLimiter.retryAfter(clientKey);
+    if (retryAfter > 0) {
+      response.setHeader("Retry-After", String(retryAfter));
       response.status(429).json({ error: "Demasiados intentos. Espera unos minutos antes de volver a intentar." });
       return;
     }
 
     const password = request.body?.password;
     if (typeof password !== "string" || !passwordsMatch(password, accessPassword)) {
-      const current = attempts && attempts.resetAt > now ? attempts : { count: 0, resetAt: now + LOGIN_WINDOW_MS };
-      current.count += 1;
-      loginAttempts.set(clientKey, current);
+      loginLimiter.record(clientKey);
       response.status(401).json({ error: "Contraseña incorrecta." });
       return;
     }
 
-    loginAttempts.delete(clientKey);
+    loginLimiter.reset(clientKey);
     const token = randomBytes(32).toString("base64url");
     sessions.set(token, { expiresAt: now + SESSION_DURATION_MS });
     response.setHeader(
@@ -172,6 +197,21 @@ export function createApp({ generateReply, model, accessPassword, clientDist }: 
       });
       return;
     }
+
+    const sessionKey = cookieValue(request.headers.cookie, SESSION_COOKIE) ?? "unknown";
+    const sessionRetry = sessionChatLimiter.retryAfter(sessionKey);
+    const globalRetry = globalChatLimiter.retryAfter("global");
+    if (sessionRetry > 0 || globalRetry > 0) {
+      response.setHeader("Retry-After", String(Math.max(sessionRetry, globalRetry)));
+      response.status(429).json({
+        error: globalRetry > 0
+          ? "Se alcanzó el límite de uso de la herramienta por esta hora. Inténtalo de nuevo más tarde."
+          : "Hiciste muchas solicitudes seguidas. Espera unos minutos antes de pedir otro cambio.",
+      });
+      return;
+    }
+    sessionChatLimiter.record(sessionKey);
+    globalChatLimiter.record("global");
 
     try {
       const stream = await generateReply(messages, currentHtml);

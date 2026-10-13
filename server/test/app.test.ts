@@ -13,8 +13,13 @@ function eventsFrom(responseText: string) {
   return responseText.trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
-function testApp(generateReply: Parameters<typeof createApp>[0]["generateReply"] = async () => chunks("ok")) {
-  return createApp({ generateReply, model: "modelo-prueba", accessPassword: ACCESS_PASSWORD });
+type AppOptions = Parameters<typeof createApp>[0];
+
+function testApp(
+  generateReply: AppOptions["generateReply"] = async () => chunks("ok"),
+  options: Partial<AppOptions> = {},
+) {
+  return createApp({ generateReply, model: "modelo-prueba", accessPassword: ACCESS_PASSWORD, ...options });
 }
 
 async function authenticatedAgent(app: ReturnType<typeof createApp>) {
@@ -110,5 +115,47 @@ describe("API del asistente WebXR", () => {
     const app = testApp(async () => chunks());
     const agent = await authenticatedAgent(app);
     await agent.post("/api/chat").send({ messages: [{ role: "user", content: "Hola" }] }).expect(502);
+  });
+
+  it("cuenta los intentos de login por la IP real del cliente detrás del proxy", async () => {
+    const app = testApp(undefined, { clientIpHeader: "X-Real-IP" });
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await request(app).post("/api/auth/login").set("X-Real-IP", "203.0.113.7").send({ password: "mala" }).expect(401);
+    }
+    await request(app).post("/api/auth/login").set("X-Real-IP", "203.0.113.7").send({ password: ACCESS_PASSWORD }).expect(429);
+    await request(app).post("/api/auth/login").set("X-Real-IP", "198.51.100.9").send({ password: ACCESS_PASSWORD }).expect(200);
+  });
+
+  it("ignora el header de IP si no está configurado", async () => {
+    const app = testApp();
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await request(app).post("/api/auth/login").set("X-Real-IP", `203.0.113.${attempt}`).send({ password: "mala" }).expect(401);
+    }
+    await request(app).post("/api/auth/login").set("X-Real-IP", "198.51.100.9").send({ password: ACCESS_PASSWORD }).expect(429);
+  });
+
+  it("limita las solicitudes de chat por sesión sin llamar al modelo", async () => {
+    let calls = 0;
+    const app = testApp(async () => { calls += 1; return chunks("<assistant-response>ok</assistant-response>"); }, { chatRequestsPerSession: 2 });
+    const agent = await authenticatedAgent(app);
+    const other = await authenticatedAgent(app);
+    const body = { messages: [{ role: "user", content: "Hola" }] };
+    await agent.post("/api/chat").send(body).expect(200);
+    await agent.post("/api/chat").send(body).expect(200);
+    const blocked = await agent.post("/api/chat").send(body).expect(429);
+    assert.ok(Number(blocked.headers["retry-after"]) > 0);
+    await other.post("/api/chat").send(body).expect(200);
+    assert.equal(calls, 3);
+  });
+
+  it("aplica un techo global de solicitudes de chat", async () => {
+    let calls = 0;
+    const app = testApp(async () => { calls += 1; return chunks("<assistant-response>ok</assistant-response>"); }, { chatRequestsPerHour: 2 });
+    const body = { messages: [{ role: "user", content: "Hola" }] };
+    await (await authenticatedAgent(app)).post("/api/chat").send(body).expect(200);
+    await (await authenticatedAgent(app)).post("/api/chat").send(body).expect(200);
+    const response = await (await authenticatedAgent(app)).post("/api/chat").send(body).expect(429);
+    assert.match(response.body.error, /límite de uso/);
+    assert.equal(calls, 2);
   });
 });

@@ -75,6 +75,10 @@ El repositorio está preparado para desplegarse como **un único servicio**: Rai
    ```
 
    `GEMINI_MODEL` es opcional. No definas `PORT`: Railway lo asigna automáticamente.
+
+   Opcionales, para acotar el uso de Gemini: `CHAT_REQUESTS_PER_SESSION` (solicitudes por sesión cada 15 minutos, 30 por defecto) y `CHAT_REQUESTS_PER_HOUR` (techo por hora sumando todas las sesiones, 300 por defecto). Cada solicitud puede hacer más de una llamada al modelo (resumen faltante o fallback a HTML libre) y cada reparación automática cuenta como una solicitud más.
+
+   En Railway el servidor toma la IP del cliente del header `X-Real-IP`, que pone el proxy de Railway, para contar los intentos de login por persona y no por proxy. Fuera de Railway se usa la IP del socket; si hay otro proxy delante, define `CLIENT_IP_HEADER` con el header que traiga la IP real.
 4. En **Settings → Networking**, genera un dominio público. Railway volverá a desplegar automáticamente con cada push a la rama conectada.
 
 ### Desde la CLI
@@ -95,7 +99,7 @@ Comprueba el despliegue en `https://TU-DOMINIO/api/health`. Debe responder con `
 ## API
 
 - `GET /api/health`: devuelve el estado y modelo configurado.
-- `POST /api/chat`: recibe `{ "messages": [...], "currentHtml": "..." }` y transmite líneas NDJSON con eventos `delta`, `done` o `error`.
+- `POST /api/chat`: responde `429` con `Retry-After` al superar el límite por sesión o el techo por hora. Recibe `{ "messages": [...], "currentHtml": "..." }` y transmite líneas NDJSON con eventos `delta`, `done` o `error`.
 
 El cliente conserva únicamente resúmenes en el historial enviado al modelo y adjunta por separado la última versión HTML terminada. No se utiliza base de datos ni almacenamiento persistente del navegador.
 
