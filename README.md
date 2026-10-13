@@ -99,12 +99,17 @@ Comprueba el despliegue en `https://TU-DOMINIO/api/health`. Debe responder con `
 ## API
 
 - `GET /api/health`: devuelve el estado y modelo configurado.
-- `POST /api/chat`: responde `429` con `Retry-After` al superar el límite por sesión o el techo por hora. Recibe `{ "messages": [...], "currentHtml": "..." }` y transmite líneas NDJSON con eventos `delta`, `done` o `error`.
+- `POST /api/chat`: responde `429` con `Retry-After` al superar el límite por sesión o el techo por hora. Recibe `{ "messages": [...], "currentHtml": "..." }` y transmite líneas NDJSON con eventos `delta`, `doc` (borrador de la base para la vista en vivo), `final`, `done` o `error`.
+- `GET /api/chat/base`: requiere sesión; devuelve la escena vacía de la base, que el cliente monta desde el primer borrador.
 
 El cliente conserva únicamente resúmenes en el historial enviado al modelo y adjunta por separado la última versión HTML terminada. No se utiliza base de datos ni almacenamiento persistente del navegador.
 
-## Motor de escenas
+## Base en vivo
 
-El modelo puede producir una escena JSON en `<webxr-scene>`. El servidor valida sus objetos y referencias, inserta el contenido en una plantilla A-Frame y entrega al cliente el mismo formato `<webxr-html>` que ya usa para la vista previa y la descarga. La plantilla incluye controles, interfaz, iluminación, suelo e interacciones de información, cambio de color, visibilidad y giro. La especificación queda dentro del HTML final para que una solicitud posterior pueda modificarla sin volver a enviar todo el documento al modelo.
+Toda experiencia parte de una base fija (`server/runtime/profeia-base.js` y `.css`): un HTML con A-Frame que contiene el runtime y un documento JSON con entorno, entidades 3D, interfaz, estilos, acciones y scripts (`server/src/base/schema.ts`). La primera solicitud parte de la escena vacía.
 
-Cuando la solicitud requiere mecánicas fuera de ese esquema, el modelo genera el HTML completo como antes. Si devuelve una escena compacta inválida, el servidor solicita una versión HTML libre antes de responder al cliente. La vista previa y su reparación automática se aplican a ambas rutas.
+El modelo no reescribe el HTML: responde con operaciones en `<webxr-ops>`, una por línea (`reset`, `meta`, `env`, `set`, `merge`, `remove`). Mientras llegan, el servidor las aplica a un borrador y emite eventos `doc`; el cliente los manda al iframe por `postMessage` y la escena se ve crecer sin recargar. Al cerrar el bloque, el servidor aplica todas las operaciones de forma atómica, valida el documento y entrega el HTML final de la base en `<webxr-html>`, que sigue sirviendo para la descarga y como contexto de la próxima solicitud.
+
+Los cambios de color, posición, texto, estilos y entorno se aplican sobre los mismos elementos y conservan el estado de la interacción. Agregar o quitar elementos con scripts reconstruye la escena dentro del mismo iframe. Si las operaciones no se pueden aplicar, el servidor pide una corrección una vez con el motivo; si vuelve a fallar, la experiencia anterior queda igual y el chat lo avisa. Las correcciones automáticas por errores de ejecución recargan el iframe desde cero.
+
+Cuando la solicitud requiere otro motor (por ejemplo Three.js puro), el modelo puede devolver HTML completo en `<webxr-html>`, que pasa sin cambios y se carga como antes.

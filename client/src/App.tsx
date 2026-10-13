@@ -3,6 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { rehypeCollapsibleHeadings } from "./collapsibleHeadings";
 import { WebXrStreamParser, isCompleteHtmlDocument } from "./streamParser";
+import { applyMessage, extractBaseDocument, isBaseHello, isBaseHtml, type BaseDocument } from "./baseFrame";
 import { classifyPreviewDiagnostic, errorsPrompt, type ClassifiedDiagnostic, type PreviewDiagnostic } from "./previewDiagnostics";
 
 type Role = "user" | "model";
@@ -36,6 +37,7 @@ interface DevScenario {
 type StreamEvent =
   | { type: "delta"; text: string }
   | { type: "final"; text: string }
+  | { type: "doc"; doc: BaseDocument }
   | { type: "done" }
   | { type: "error"; message: string };
 
@@ -144,7 +146,7 @@ export default function App() {
   const [isPreviewBuilding, setIsPreviewBuilding] = useState(false);
   const [previewMode, setPreviewMode] = useState<PreviewMode>("closed");
   const [iframeKey, setIframeKey] = useState(0);
-  const [previewRunId, setPreviewRunId] = useState(crypto.randomUUID());
+  const [previewRunId, setPreviewRunId] = useState<string>(crypto.randomUUID());
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus>("idle");
   const [previewDiagnostics, setPreviewDiagnostics] = useState<ClassifiedDiagnostic[]>([]);
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -162,6 +164,15 @@ export default function App() {
   const originalMessageIdRef = useRef<string | undefined>(undefined);
   const correctionResponsesRef = useRef<string[]>([]);
   const handleDiagnosticRef = useRef<(diagnostic: PreviewDiagnostic) => void>(() => undefined);
+  // La corrida que se escucha puede cambiar sin recargar el iframe (base en vivo), así que el filtro va en un ref.
+  const activeRunIdRef = useRef<string>(previewRunId);
+  // HTML de la escena vacía; permite mostrar la base desde el primer borrador.
+  const baseHtmlRef = useRef("");
+  const frameReadyRef = useRef(false);
+  const frameHtmlRef = useRef("");
+  const pendingDraftRef = useRef<BaseDocument | undefined>(undefined);
+  // Con la base en vivo el overlay no tapa la escena mientras se construye.
+  const [liveView, setLiveView] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -177,6 +188,40 @@ export default function App() {
         setAuthState("locked");
       });
     return () => controller.abort();
+  }, []);
+
+  const postToFrame = (message: unknown) => iframeRef.current?.contentWindow?.postMessage(message, "*");
+
+  // Carga completa del iframe: HTML nuevo, corrida nueva y espera del saludo de la base si corresponde.
+  const loadFrame = (html: string, runId: string) => {
+    frameReadyRef.current = false;
+    frameHtmlRef.current = html;
+    activeRunIdRef.current = runId;
+    setCurrentHtml(html);
+    setPreviewRunId(runId);
+    setIframeKey(key => key + 1);
+  };
+
+  useEffect(() => {
+    if (authState !== "authenticated") return;
+    const controller = new AbortController();
+    fetch("/api/chat/base", { signal: controller.signal })
+      .then(response => response.ok ? response.text() : "")
+      .then(html => { if (isBaseHtml(html)) baseHtmlRef.current = html; })
+      .catch(() => undefined); // Sin la base solo se pierde la vista en vivo; la experiencia final carga igual.
+    return () => controller.abort();
+  }, [authState]);
+
+  useEffect(() => {
+    const receiveBaseHello = (event: MessageEvent) => {
+      if (event.source !== iframeRef.current?.contentWindow || !isBaseHello(event.data)) return;
+      frameReadyRef.current = true;
+      const pending = pendingDraftRef.current;
+      pendingDraftRef.current = undefined;
+      if (pending) postToFrame(applyMessage(pending, { draft: true }));
+    };
+    window.addEventListener("message", receiveBaseHello);
+    return () => window.removeEventListener("message", receiveBaseHello);
   }, []);
 
   useEffect(() => {
@@ -204,6 +249,35 @@ export default function App() {
     let finalizedResult: ReturnType<WebXrStreamParser["finish"]> | undefined;
     let finalMessageStored = false;
     let storedMessageId: string | undefined;
+    let draftShown = false;
+    let committedLive = false;
+
+    // Si hubo borradores y no llegó una versión final, el iframe vuelve a la última experiencia lista.
+    const restoreFrame = () => {
+      pendingDraftRef.current = undefined;
+      setLiveView(false);
+      loadFrame(lastCompletedHtml, crypto.randomUUID());
+      setPreviewStatus(lastCompletedHtml ? "ready" : "idle");
+      setIsPreviewBuilding(false);
+    };
+
+    const showDraft = (doc: BaseDocument) => {
+      if (isRepair || committedHtml) return;
+      if (!draftShown) {
+        const frameIsBase = isBaseHtml(frameHtmlRef.current);
+        if (!frameIsBase && !baseHtmlRef.current) return;
+        draftShown = true;
+        if (!frameIsBase) loadFrame(baseHtmlRef.current, crypto.randomUUID());
+        // Mientras se arma el borrador no se escuchan diagnósticos: la experiencia se comprueba al final.
+        activeRunIdRef.current = `draft-${crypto.randomUUID()}`;
+        setPreviewMode(mode => mode === "closed" ? "split" : mode);
+        setPreviewStatus("generating");
+        setIsPreviewBuilding(true);
+        setLiveView(true);
+      }
+      if (frameReadyRef.current) postToFrame(applyMessage(doc, { draft: true }));
+      else pendingDraftRef.current = doc;
+    };
 
     const commitCompletedHtml = (html: string) => {
       if (committedHtml || !isCompleteHtmlDocument(html)) return;
@@ -218,10 +292,21 @@ export default function App() {
         correctionResponsesRef.current = [];
       }
       const nextRunId = crypto.randomUUID();
-      setPreviewRunId(nextRunId);
-      awaitingFinalLoadRef.current = true;
-      setCurrentHtml(committedHtml);
-      setIframeKey((key) => key + 1);
+      // Con la base ya cargada, la versión final se aplica en vivo; una corrección siempre recarga desde cero.
+      const liveDoc = !isRepair && frameReadyRef.current && isBaseHtml(frameHtmlRef.current) && isBaseHtml(committedHtml)
+        ? extractBaseDocument(committedHtml)
+        : undefined;
+      pendingDraftRef.current = undefined;
+      if (liveDoc) {
+        committedLive = true;
+        activeRunIdRef.current = nextRunId;
+        setLiveView(true);
+        postToFrame(applyMessage(liveDoc, { draft: false, runId: nextRunId }));
+      } else {
+        awaitingFinalLoadRef.current = true;
+        setLiveView(false);
+        loadFrame(committedHtml, nextRunId);
+      }
       if (previewTimeoutRef.current) clearTimeout(previewTimeoutRef.current);
       previewTimeoutRef.current = setTimeout(() => {
         handleDiagnosticRef.current({ type: "startup-timeout", details: {} });
@@ -246,6 +331,7 @@ export default function App() {
       if (!line.trim()) return;
       const event = JSON.parse(line) as StreamEvent;
       if (event.type === "delta") updateParsedContent(event.text);
+      if (event.type === "doc") showDraft(event.doc);
       if (event.type === "final") {
         const finalParser = new WebXrStreamParser();
         finalParser.push(event.text);
@@ -298,6 +384,7 @@ export default function App() {
       if (!finalizedResult) throw new Error("El servidor no confirmó la versión final de la experiencia.");
       const result = finalizedResult;
       setStreamingSummary("");
+      if (draftShown && !committedHtml) restoreFrame();
       if (!finalMessageStored && result.response) {
         setMessages([...nextMessages, { id: crypto.randomUUID(), role: "model", content: result.response, html: result.html }]);
       }
@@ -306,7 +393,11 @@ export default function App() {
         awaitingFinalLoadRef.current = false;
         setIsPreviewBuilding(false);
       }
-      setCurrentHtml(committedHtml || lastCompletedHtml);
+      if (draftShown && !committedHtml) restoreFrame();
+      else if (!committedLive) {
+        frameHtmlRef.current = committedHtml || lastCompletedHtml;
+        setCurrentHtml(frameHtmlRef.current);
+      }
       setStreamingHtml(null);
       setStreamingSummary("");
       if (storedMessageId) {
@@ -427,13 +518,13 @@ export default function App() {
     const receivePreviewDiagnostic = (event: MessageEvent) => {
       if (event.source !== iframeRef.current?.contentWindow) return;
       const data = event.data as Partial<PreviewDiagnostic> & { namespace?: string; runId?: string };
-      if (!data || data.namespace !== "profeia-preview" || data.runId !== previewRunId) return;
+      if (!data || data.namespace !== "profeia-preview" || data.runId !== activeRunIdRef.current) return;
       if (typeof data.type !== "string" || !data.details || typeof data.details !== "object") return;
       handleDiagnosticRef.current({ type: data.type as PreviewDiagnostic["type"], details: data.details });
     };
     window.addEventListener("message", receivePreviewDiagnostic);
     return () => window.removeEventListener("message", receivePreviewDiagnostic);
-  }, [previewRunId]);
+  }, []);
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
@@ -498,14 +589,13 @@ export default function App() {
     setStreamingSummary(scenario.status === "generating" ? scenario.response ?? "" : "");
     setStreamingHtml(scenario.status === "generating" ? scenario.html ?? null : null);
     const completedHtml = scenario.status === "generating" ? "" : scenario.html ?? "";
-    setCurrentHtml(completedHtml);
+    setLiveView(false);
+    loadFrame(completedHtml, crypto.randomUUID());
     setLastCompletedHtml(scenario.status === "ready" ? completedHtml : "");
     currentCandidateRef.current = completedHtml;
     setPreviewStatus(scenario.status);
     setIsPreviewBuilding(["generating", "repairing", "repair-failed"].includes(scenario.status));
     setPreviewMode(scenario.html ? "split" : "closed");
-    setPreviewRunId(crypto.randomUUID());
-    setIframeKey(key => key + 1);
 
     const diagnostic = scenario.id === "missing-response"
       ? classifyPreviewDiagnostic({ type: "missing-response", details: {} })
@@ -537,9 +627,9 @@ export default function App() {
     setPreviewDiagnostics([]);
     setPreviewStatus("checking");
     setIsPreviewBuilding(true);
-    const nextRunId = crypto.randomUUID();
-    setPreviewRunId(nextRunId);
-    setIframeKey(key => key + 1);
+    setLiveView(false);
+    // Recarga la última versión lógica, que con la base en vivo puede ser más nueva que el HTML del iframe.
+    loadFrame(currentCandidateRef.current || currentHtml || lastCompletedHtml, crypto.randomUUID());
     if (previewTimeoutRef.current) clearTimeout(previewTimeoutRef.current);
     previewTimeoutRef.current = setTimeout(() => {
       handleDiagnosticRef.current({ type: "startup-timeout", details: {} });
@@ -548,6 +638,8 @@ export default function App() {
 
   const previewHtml = currentHtml || lastCompletedHtml;
   const instrumentedPreviewHtml = previewHtml.replaceAll("__PROFEIA_PREVIEW_RUN_ID__", previewRunId);
+  // En vivo la escena se ve mientras se construye; el velo queda para cargas completas y correcciones.
+  const showBuildOverlay = isPreviewBuilding && !(liveView && (previewStatus === "generating" || previewStatus === "checking"));
   const isPreviewVisible = previewMode !== "closed" && (Boolean(previewHtml) || isPreviewBuilding);
   const visibleMessages = messages.filter(message => !message.internal);
   const previewStatusLabel = previewStatus === "repairing"
@@ -636,13 +728,13 @@ export default function App() {
             <button onClick={() => setPreviewMode("closed")} className="close-preview" aria-label="Cerrar preview">✕</button>
           </div>
         </div>
-        <div className={`preview-stage ${isPreviewBuilding ? "is-building" : ""}`}>
+        <div className={`preview-stage ${showBuildOverlay ? "is-building" : ""}`}>
           {previewHtml ? (
             <iframe ref={iframeRef} key={iframeKey} title="Experiencia WebXR generada" srcDoc={instrumentedPreviewHtml} onLoad={handlePreviewLoaded} sandbox="allow-scripts allow-forms allow-pointer-lock allow-downloads" allow="xr-spatial-tracking; fullscreen; accelerometer; gyroscope" />
           ) : (
             <div className="preview-placeholder" aria-hidden="true"><img src="/university-logo.png" alt="Logo de la universidad" /></div>
           )}
-          {isPreviewBuilding && <div className="build-overlay" role="status" aria-live="polite">
+          {showBuildOverlay && <div className="build-overlay" role="status" aria-live="polite">
             <div className="liquid-lens"><span /><span /><span /></div>
             {streamingHtml && <pre ref={ghostCodeRef} className="ghost-code" aria-hidden="true"><code>{streamingHtml}</code></pre>}
             <div className="build-status">
