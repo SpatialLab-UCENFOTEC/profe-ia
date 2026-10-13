@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import request from "supertest";
 import { createApp } from "../src/app.js";
+import { emptyDoc } from "../src/base/schema.js";
 
 const ACCESS_PASSWORD = "contraseña-de-prueba";
 
-async function* chunks(...values: string[]) {
+async function* chunks(...values: Array<string | { kind: "doc"; doc: ReturnType<typeof emptyDoc> }>) {
   for (const value of values) yield value;
 }
 
@@ -80,6 +81,29 @@ describe("API del asistente WebXR", () => {
     assert.equal(events[2]?.type, "final");
     assert.match(String(events[2]?.text), /profeia-preview-monitor/);
     assert.deepEqual(events[3], { type: "done" });
+  });
+
+  it("manda los documentos intermedios de la base como eventos doc", async () => {
+    const doc = emptyDoc();
+    const app = testApp(async () => chunks({ kind: "doc", doc }, "<assistant-response>Listo</assistant-response>"));
+    const agent = await authenticatedAgent(app);
+    const response = await agent.post("/api/chat").send({ messages: [{ role: "user", content: "Hola" }] }).expect(200);
+    assert.deepEqual(eventsFrom(response.text), [
+      { type: "doc", doc },
+      { type: "delta", text: "<assistant-response>Listo</assistant-response>" },
+      { type: "final", text: "<assistant-response>Listo</assistant-response>" },
+      { type: "done" },
+    ]);
+  });
+
+  it("entrega la escena vacía instrumentada solo con sesión", async () => {
+    const app = testApp();
+    await request(app).get("/api/chat/base").expect(401);
+    const agent = await authenticatedAgent(app);
+    const response = await agent.get("/api/chat/base").expect(200).expect("Content-Type", /text\/html/);
+    assert.match(response.text, /profeia-preview-monitor/);
+    assert.match(response.text, /id="profeia-base-doc"/);
+    assert.ok(response.text.indexOf("profeia-preview-monitor") < response.text.indexOf("ProfeIA base runtime"));
   });
 
   it("rechaza historiales y HTML actual inválidos", async () => {

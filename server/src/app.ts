@@ -1,8 +1,10 @@
 import express, { type ErrorRequestHandler } from "express";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import path from "node:path";
-import type { ChatMessage, GenerateReply } from "./types.js";
-import { instrumentGeneratedResponse } from "./previewMonitor.js";
+import type { ChatMessage, GenerateReply, ReplyChunk } from "./types.js";
+import { renderBaseHtml } from "./base/render.js";
+import { emptyDoc } from "./base/schema.js";
+import { ensurePreviewMonitor, instrumentGeneratedResponse } from "./previewMonitor.js";
 import { createRateLimiter } from "./rateLimit.js";
 
 const MAX_MESSAGES = 30;
@@ -70,7 +72,7 @@ function parseCurrentHtml(value: unknown): string | undefined | null {
   return value;
 }
 
-function streamEvent(type: "delta" | "final" | "done" | "error", payload: Record<string, unknown> = {}) {
+function streamEvent(type: "delta" | "doc" | "final" | "done" | "error", payload: Record<string, unknown> = {}) {
   return `${JSON.stringify({ type, ...payload })}\n`;
 }
 
@@ -188,6 +190,12 @@ export function createApp({
     next();
   });
 
+  // La escena vacía con la que arranca la vista previa; después todo llega como cambios sobre ella.
+  app.get("/api/chat/base", (_request, response) => {
+    response.setHeader("Cache-Control", "no-store");
+    response.type("html").send(ensurePreviewMonitor(renderBaseHtml(emptyDoc())));
+  });
+
   app.post("/api/chat", async (request, response, next) => {
     const messages = parseMessages(request.body?.messages);
     const currentHtml = parseCurrentHtml(request.body?.currentHtml);
@@ -227,20 +235,28 @@ export function createApp({
       response.setHeader("X-Content-Type-Options", "nosniff");
       response.flushHeaders();
 
-      let completedResponse = first.value;
-      response.write(streamEvent("delta", { text: first.value }));
+      let completedResponse = "";
+      // Los documentos intermedios de la base van como eventos aparte: el cliente los aplica en vivo.
+      const write = (chunk: ReplyChunk) => {
+        if (typeof chunk === "string") {
+          completedResponse += chunk;
+          response.write(streamEvent("delta", { text: chunk }));
+        } else {
+          response.write(streamEvent("doc", { doc: chunk.doc }));
+        }
+      };
+      write(first.value);
       try {
         while (true) {
           const result = await iterator.next();
           if (result.done) break;
-          completedResponse += result.value;
-          response.write(streamEvent("delta", { text: result.value }));
+          write(result.value);
         }
 
         if (!hasValidAssistantResponse(completedResponse)) {
           const summaryMessages: ChatMessage[] = [
             ...messages.slice(-1),
-            { role: "model", content: completedResponse },
+            { role: "model", content: completedResponse.replace(/<webxr-html>[\s\S]*?<\/webxr-html>/i, "<webxr-html>(experiencia ya generada)</webxr-html>") },
             {
               role: "user",
               content: "Tu respuesta anterior no incluyó un bloque <assistant-response> válido y completo con un resumen no vacío. Conserva exactamente la experiencia ya generada; no la vuelvas a generar ni la modifiques. Devuelve únicamente este formato, con un resumen breve que explique qué se creó o cambió, cómo interactuar con la experiencia y los requisitos relevantes: <assistant-response>resumen en Markdown</assistant-response>.",
@@ -248,7 +264,7 @@ export function createApp({
           ];
           const summaryStream = await generateReply(summaryMessages, currentHtml);
           let summaryText = "";
-          for await (const chunk of summaryStream) summaryText += chunk;
+          for await (const chunk of summaryStream) if (typeof chunk === "string") summaryText += chunk;
           const summaryBlock = extractAssistantResponse(summaryText);
           if (hasValidAssistantResponse(summaryBlock)) {
             completedResponse += `\n${summaryBlock}`;

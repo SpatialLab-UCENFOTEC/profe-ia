@@ -5,8 +5,10 @@ export const PREVIEW_RUN_ID_PLACEHOLDER = "__PROFEIA_PREVIEW_RUN_ID__";
 export const PREVIEW_MONITOR_SCRIPT = `<script id="${MONITOR_ID}">
 (() => {
   const namespace = "profeia-preview";
-  const runId = "${PREVIEW_RUN_ID_PLACEHOLDER}";
+  let runId = "${PREVIEW_RUN_ID_PLACEHOLDER}";
   const send = (type, details = {}) => parent.postMessage({ namespace, runId, type, details }, "*");
+  // La base cambia de corrida sin recargar: cada documento aplicado trae su runId y avisa cuando quedó listo.
+  window.__profeiaPreview = { send, setRunId: value => { runId = String(value); } };
   const text = value => {
     try { return value instanceof Error ? value.message : String(value ?? "Error desconocido"); }
     catch { return "Error desconocido"; }
@@ -38,6 +40,10 @@ export const PREVIEW_MONITOR_SCRIPT = `<script id="${MONITOR_ID}">
   }));
 
   const announceReady = () => {
+    if (document.getElementById("profeia-base-doc")) {
+      document.addEventListener("profeia-base:ready", () => send("experience-ready", { engine: "base" }));
+      return;
+    }
     const scene = document.querySelector("a-scene");
     if (!scene) {
       requestAnimationFrame(() => send("experience-ready", { engine: "generic" }));
