@@ -29,7 +29,7 @@ a-scene{width:100%;height:100%}
 .pb-field select,.pb-field input[type=range]{width:100%;font:inherit}
 .pb-field select{background:#0b1a30;color:#fff;border:1px solid #ffffff40;border-radius:8px;padding:6px 8px}
 .pb-field progress{width:100%}
-.pb-image img{display:block;max-width:min(320px,calc(100vw - 32px));border-radius:12px}
+.pb-is-image img{display:block;max-width:min(320px,calc(100vw - 32px));border-radius:12px}
 .pb-message{position:fixed;z-index:11;bottom:24px;left:50%;transform:translateX(-50%);max-width:min(560px,calc(100vw - 32px));padding:12px 16px;border-radius:12px;background:#071222ec;display:none;text-align:center;line-height:1.45}
 .pb-message.visible{display:block}
 .pb-fallback{position:fixed;inset:0;display:grid;place-items:center;padding:24px;text-align:center;background:#101827;z-index:20}

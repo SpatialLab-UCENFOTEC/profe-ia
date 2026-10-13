@@ -173,14 +173,11 @@
       attrs.material = material;
     }
     if (spec.shape === "text") {
-      attrs.text = { value: template(spec.text || ""), align: spec.align || "center", color: spec.color || "#ffffff", width: spec.size ? spec.size[0] * 4 : 4, wrapCount: spec.wrapCount || 40 };
+      attrs.text = { value: template(spec.text || ""), align: spec.align || "center", color: spec.color || "#ffffff", width: spec.size ? spec.size[0] * 4 : 4, wrapCount: spec.wrapCount || 40, shader: "msdf" };
     }
     if (spec.shape === "model" && spec.url) attrs["gltf-model"] = spec.url;
     if (spec.shape === "sound" && spec.url) attrs.sound = { src: `url(${spec.url})`, autoplay: Boolean(spec.autoplay), loop: Boolean(spec.loop), positional: true };
     if (spec.shape === "light") attrs.light = { type: spec.lightType || "point", color: spec.color || "#ffffff", intensity: spec.intensity ?? 1, distance: spec.distance ?? 0 };
-    if (spec.label && spec.shape !== "text") {
-      // Las etiquetas viven en una entidad hija que se maneja aparte.
-    }
     for (const [name, value] of entries(spec.components)) attrs[name] = value;
     return attrs;
   }
@@ -207,7 +204,7 @@
     }
     const height = spec.shape === "box" || spec.shape === "cylinder" || spec.shape === "cone" ? (spec.size || [1, 1, 1])[1] / 2 : spec.radius ?? 0.5;
     label.setAttribute("position", `0 ${height + 0.25} 0`);
-    label.setAttribute("text", { value: template(spec.label), align: "center", color: spec.labelColor || "#ffffff", width: 3, wrapCount: 24 });
+    label.setAttribute("text", { value: template(spec.label), align: "center", color: spec.labelColor || "#ffffff", width: 3, wrapCount: 24, shader: "msdf" });
     label.setAttribute("look-at-camera", "");
   }
 
@@ -286,7 +283,7 @@
   function uiEl(id) { return uiRoot.querySelector(`[data-pb-ui="${CSS.escape(id)}"]`); }
 
   function applyUiFrame(id, el, spec) {
-    el.className = `pb-item pb-${spec.type}${spec.className ? ` ${spec.className}` : ""}`;
+    el.className = `pb-item pb-is-${spec.type}${spec.className ? ` ${spec.className}` : ""}`;
     el.hidden = Boolean(spec.hidden);
     el.removeAttribute("style");
     if (typeof spec.style === "string") el.style.cssText = spec.style;
