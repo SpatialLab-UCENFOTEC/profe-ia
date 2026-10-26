@@ -26,12 +26,16 @@ function positiveInteger(name: string) {
   return value;
 }
 
-// Nivel de razonamiento de Gemini (minimal, low, medium, high). Sin valor, el default del modelo.
-const thinkingLevel = process.env.GEMINI_THINKING_LEVEL?.trim().toLowerCase() || undefined;
-if (thinkingLevel && !(THINKING_LEVELS as readonly string[]).includes(thinkingLevel)) {
-  console.error(`GEMINI_THINKING_LEVEL debe ser uno de: ${THINKING_LEVELS.join(", ")} (valor actual: ${thinkingLevel}).`);
+// Nivel de razonamiento de Gemini (minimal, low, medium, high, o "default" para el del modelo).
+// Sin valor, low en Gemini 3: medido con gemini-3.6-flash, crear baja de 26-31 s a 7-9 s y un
+// cambio chico de 3 s a 2 s, con escenas equivalentes. Los modelos 2.x no aceptan thinkingLevel.
+const thinkingSetting = process.env.GEMINI_THINKING_LEVEL?.trim().toLowerCase()
+  || (model.startsWith("gemini-3") ? "low" : "default");
+if (thinkingSetting !== "default" && !(THINKING_LEVELS as readonly string[]).includes(thinkingSetting)) {
+  console.error(`GEMINI_THINKING_LEVEL debe ser uno de: ${THINKING_LEVELS.join(", ")}, default (valor actual: ${thinkingSetting}).`);
   process.exit(1);
 }
+const thinkingLevel = thinkingSetting === "default" ? undefined : thinkingSetting;
 
 const chatRequestsPerSession = positiveInteger("CHAT_REQUESTS_PER_SESSION");
 const chatRequestsPerHour = positiveInteger("CHAT_REQUESTS_PER_HOUR");

@@ -76,7 +76,9 @@ El repositorio está preparado para desplegarse como **un único servicio**: Rai
 
    `GEMINI_MODEL` es opcional. No definas `PORT`: Railway lo asigna automáticamente.
 
-   Opcionales, para acotar el uso de Gemini: `CHAT_REQUESTS_PER_SESSION` (solicitudes por sesión cada 15 minutos, 30 por defecto) y `CHAT_REQUESTS_PER_HOUR` (techo por hora sumando todas las sesiones, 300 por defecto). Cada solicitud puede hacer más de una llamada al modelo (resumen faltante o fallback a HTML libre) y cada reparación automática cuenta como una solicitud más.
+   Opcionales, para acotar el uso de Gemini: `CHAT_REQUESTS_PER_SESSION` (solicitudes por sesión cada 15 minutos, 30 por defecto) y `CHAT_REQUESTS_PER_HOUR` (techo por hora sumando todas las sesiones, 300 por defecto). Cada solicitud puede hacer más de una llamada al modelo (corrección de piezas inválidas o fallback a HTML libre) y cada reparación automática cuenta como una solicitud más.
+
+   Opcional, para velocidad: `GEMINI_THINKING_LEVEL` (`minimal`, `low`, `medium`, `high` o `default`). Sin valor, los modelos Gemini 3 usan `low`, que responde varias veces antes; `default` vuelve al razonamiento propio del modelo.
 
    En Railway el servidor toma la IP del cliente del header `X-Real-IP`, que pone el proxy de Railway, para contar los intentos de login por persona y no por proxy. Fuera de Railway se usa la IP del socket; si hay otro proxy delante, define `CLIENT_IP_HEADER` con el header que traiga la IP real.
 4. En **Settings → Networking**, genera un dominio público. Railway volverá a desplegar automáticamente con cada push a la rama conectada.
