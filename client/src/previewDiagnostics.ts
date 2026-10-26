@@ -44,6 +44,8 @@ export function classifyPreviewDiagnostic(diagnostic: PreviewDiagnostic): Classi
   } else if (diagnostic.type === "startup-timeout") {
     summary = "La experiencia no informó que estuviera lista dentro del tiempo esperado.";
   } else if (diagnostic.type === "missing-response") {
+    // Sin resumen la experiencia funciona igual: no vale otra llamada al modelo.
+    severity = "warning";
     summary = "El código de la experiencia está completo, pero falta la respuesta visible para el usuario. Devuelve también un bloque <assistant-response> completo que explique qué se creó o cambió y cómo usarlo.";
   } else if (diagnostic.type === "resource-error") {
     const fatalResource = tag === "SCRIPT" || tag === "A-ASSET-ITEM" ||

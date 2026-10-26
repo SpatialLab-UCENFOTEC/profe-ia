@@ -307,6 +307,107 @@ function checkParents(items: Record<string, { parent?: string }>, kind: string, 
   }
 }
 
+function validateScript(id: string, script: unknown) {
+  checkId(id, "El script");
+  if (!isRecord(script) || typeof script.code !== "string") fail(`scripts.${id} debe ser { code: "..." }.`);
+  if (script.code.length > LIMITS.scriptLength) fail(`scripts.${id} supera ${LIMITS.scriptLength} caracteres.`);
+  if (script.order !== undefined) checkNumber(script.order, `scripts.${id}.order`);
+  for (const key of Object.keys(script)) if (key !== "code" && key !== "order") fail(`scripts.${id} tiene la propiedad desconocida "${key}".`);
+  // Mismo envoltorio que el runtime: el constructor solo compila, no ejecuta. Así un error de sintaxis
+  // se corrige acá y no después de cargar la escena en el navegador.
+  try {
+    // eslint-disable-next-line no-new-func
+    new Function("ctx", `"use strict";\n${script.code}`);
+  } catch (error) {
+    fail(`scripts.${id} tiene un error de sintaxis: ${error instanceof Error ? error.message : String(error)}.`);
+  }
+}
+
+function validateStyle(id: string, css: unknown) {
+  checkId(id, "El estilo");
+  if (typeof css !== "string" || css.length > LIMITS.styleLength) fail(`styles.${id} debe ser CSS de hasta ${LIMITS.styleLength} caracteres.`);
+  if (/<\/style/i.test(css)) fail(`styles.${id} no puede cerrar la etiqueta style.`);
+}
+
+export type DocKind = "entity" | "ui" | "script" | "style";
+
+export interface DocProblem {
+  kind: DocKind | "environment" | "meta";
+  id?: string;
+  message: string;
+}
+
+function errorText(error: unknown) {
+  if (error instanceof DocError) return error.message;
+  throw error;
+}
+
+/**
+ * Quita del documento las piezas inválidas en vez de rechazarlo entero, para mostrar ya la escena con
+ * todo lo que sí sirve y pedir al modelo solo la corrección de lo que falló. El entorno, el título y
+ * las instrucciones inválidas vuelven a los de `fallback`.
+ */
+export function pruneInvalid(value: BaseDoc, fallback: BaseDoc): { doc: BaseDoc; problems: DocProblem[] } {
+  const doc = structuredClone(value);
+  const problems: DocProblem[] = [];
+  const attempt = (problem: Omit<DocProblem, "message">, check: () => void, drop: () => void) => {
+    try { check(); }
+    catch (error) {
+      problems.push({ ...problem, message: errorText(error) });
+      drop();
+    }
+  };
+
+  attempt({ kind: "environment" }, () => validateEnvironment(doc.environment), () => { doc.environment = structuredClone(fallback.environment); });
+  attempt({ kind: "meta" }, () => { checkString(doc.title, "title", 200); checkString(doc.instructions, "instructions", 2000); }, () => {
+    doc.title = fallback.title;
+    doc.instructions = fallback.instructions;
+  });
+  for (const key of ["entities", "ui", "scripts", "styles"] as const) if (!isRecord(doc[key])) (doc as unknown as Record<string, unknown>)[key] = {};
+
+  for (const [id, entity] of Object.entries(doc.entities)) {
+    attempt({ kind: "entity", id }, () => {
+      checkId(id, "La entidad");
+      if (id in doc.ui) fail(`El id "${id}" se usa en una entidad y en la interfaz; deben ser únicos.`);
+      validateEntity(id, entity);
+    }, () => { delete doc.entities[id]; });
+  }
+  for (const [id, item] of Object.entries(doc.ui)) {
+    attempt({ kind: "ui", id }, () => { checkId(id, "El elemento de interfaz"); validateUi(id, item); }, () => { delete doc.ui[id]; });
+  }
+  for (const [id, script] of Object.entries(doc.scripts)) attempt({ kind: "script", id }, () => validateScript(id, script), () => { delete doc.scripts[id]; });
+  for (const [id, css] of Object.entries(doc.styles)) attempt({ kind: "style", id }, () => validateStyle(id, css), () => { delete doc.styles[id]; });
+
+  // Un padre quitado deja huérfanos a sus hijos: se repite hasta que no quede ninguno.
+  const pruneParents = <T extends { parent?: string }>(items: Record<string, T>, kind: "entity" | "ui", label: string, allowed: (parentId: string) => boolean) => {
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const id of Object.keys(items)) {
+        attempt({ kind, id }, () => checkParents({ [id]: items[id] }, label, allowed), () => { delete items[id]; changed = true; });
+      }
+    }
+  };
+  pruneParents(doc.entities, "entity", "entities", parentId => parentId in doc.entities);
+  pruneParents(doc.ui, "ui", "ui", parentId => doc.ui[parentId]?.type === "panel");
+  // Los ciclos se revisan con el conjunto completo; checkParents falla por el primero que encuentra.
+  for (let guard = 0; guard < LIMITS.entities + LIMITS.ui; guard += 1) {
+    try {
+      checkParents(doc.entities, "entities", parentId => parentId in doc.entities);
+      checkParents(doc.ui, "ui", parentId => doc.ui[parentId]?.type === "panel");
+      break;
+    } catch (error) {
+      const message = errorText(error);
+      const match = /^(entities|ui)\.([\w-]+) /.exec(message);
+      if (!match) throw error;
+      const kind = match[1] === "entities" ? "entity" : "ui";
+      problems.push({ kind, id: match[2], message });
+      delete (kind === "entity" ? doc.entities : doc.ui)[match[2]];
+    }
+  }
+
+  return { doc: validateDoc(doc), problems };
+}
+
 export function validateDoc(value: unknown): BaseDoc {
   if (!isRecord(value)) fail("El documento debe ser un objeto.");
   if (value.version !== 2) fail("El documento debe tener version 2.");
@@ -334,18 +435,8 @@ export function validateDoc(value: unknown): BaseDoc {
     checkId(id, "El elemento de interfaz");
     validateUi(id, item);
   }
-  for (const [id, script] of Object.entries(scripts)) {
-    checkId(id, "El script");
-    if (!isRecord(script) || typeof script.code !== "string") fail(`scripts.${id} debe ser { code: "..." }.`);
-    if (script.code.length > LIMITS.scriptLength) fail(`scripts.${id} supera ${LIMITS.scriptLength} caracteres.`);
-    if (script.order !== undefined) checkNumber(script.order, `scripts.${id}.order`);
-    for (const key of Object.keys(script)) if (key !== "code" && key !== "order") fail(`scripts.${id} tiene la propiedad desconocida "${key}".`);
-  }
-  for (const [id, css] of Object.entries(styles)) {
-    checkId(id, "El estilo");
-    if (typeof css !== "string" || css.length > LIMITS.styleLength) fail(`styles.${id} debe ser CSS de hasta ${LIMITS.styleLength} caracteres.`);
-    if (/<\/style/i.test(css)) fail(`styles.${id} no puede cerrar la etiqueta style.`);
-  }
+  for (const [id, script] of Object.entries(scripts)) validateScript(id, script);
+  for (const [id, css] of Object.entries(styles)) validateStyle(id, css);
 
   const typedEntities = entities as Record<string, EntitySpec>;
   const typedUi = ui as Record<string, UiSpec>;

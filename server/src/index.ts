@@ -2,7 +2,7 @@ import dotenv from "dotenv";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createApp } from "./app.js";
-import { createGeminiGenerator } from "./gemini.js";
+import { createGeminiGenerator, THINKING_LEVELS, type ThinkingLevelName } from "./gemini.js";
 
 const serverDirectory = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(serverDirectory, "../../.env") });
@@ -26,6 +26,13 @@ function positiveInteger(name: string) {
   return value;
 }
 
+// Nivel de razonamiento de Gemini (minimal, low, medium, high). Sin valor, el default del modelo.
+const thinkingLevel = process.env.GEMINI_THINKING_LEVEL?.trim().toLowerCase() || undefined;
+if (thinkingLevel && !(THINKING_LEVELS as readonly string[]).includes(thinkingLevel)) {
+  console.error(`GEMINI_THINKING_LEVEL debe ser uno de: ${THINKING_LEVELS.join(", ")} (valor actual: ${thinkingLevel}).`);
+  process.exit(1);
+}
+
 const chatRequestsPerSession = positiveInteger("CHAT_REQUESTS_PER_SESSION");
 const chatRequestsPerHour = positiveInteger("CHAT_REQUESTS_PER_HOUR");
 
@@ -41,7 +48,7 @@ if (!accessPassword) {
 
 const clientDist = path.resolve(serverDirectory, "../../client/dist");
 const app = createApp({
-  generateReply: createGeminiGenerator(apiKey, model),
+  generateReply: createGeminiGenerator(apiKey, model, thinkingLevel as ThinkingLevelName | undefined),
   model,
   accessPassword,
   clientDist,
@@ -51,5 +58,5 @@ const app = createApp({
 });
 
 app.listen(port, () => {
-  console.log(`Servidor listo en http://localhost:${port} (modelo: ${model})`);
+  console.log(`Servidor listo en http://localhost:${port} (modelo: ${model}${thinkingLevel ? `, razonamiento: ${thinkingLevel}` : ""})`);
 });

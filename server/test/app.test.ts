@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import request from "supertest";
-import { createApp } from "../src/app.js";
+import { createApp, ensureAssistantResponse } from "../src/app.js";
 import { emptyDoc } from "../src/base/schema.js";
 
 const ACCESS_PASSWORD = "contraseña-de-prueba";
@@ -62,7 +62,7 @@ describe("API del asistente WebXR", () => {
     assert.deepEqual(eventsFrom(response.text), [
       { type: "delta", text: "Recibí: Hola" },
       { type: "delta", text: " con 13 caracteres" },
-      { type: "final", text: "Recibí: Hola con 13 caracteres" },
+      { type: "final", text: "<assistant-response>Recibí: Hola con 13 caracteres</assistant-response>" },
       { type: "done" },
     ]);
   });
@@ -181,5 +181,26 @@ describe("API del asistente WebXR", () => {
     const response = await (await authenticatedAgent(app)).post("/api/chat").send(body).expect(429);
     assert.match(response.body.error, /límite de uso/);
     assert.equal(calls, 2);
+  });
+});
+
+describe("resumen de la respuesta", () => {
+  const scene = "<webxr-html><!doctype html><html></html></webxr-html>\n";
+
+  it("deja intacto un resumen bien formado", () => {
+    const value = `${scene}<assistant-response>Listo</assistant-response>`;
+    assert.equal(ensureAssistantResponse(value), value);
+  });
+
+  it("cierra un resumen cortado sin llamar al modelo", () => {
+    assert.equal(ensureAssistantResponse(`${scene}<assistant-response>Agregué el cubo`), `${scene.trimEnd()}\n<assistant-response>Agregué el cubo</assistant-response>`);
+  });
+
+  it("usa uno por defecto si falta o viene vacío o repetido", () => {
+    for (const tail of ["", "<assistant-response></assistant-response>", "<assistant-response>a</assistant-response><assistant-response>b</assistant-response>"]) {
+      const fixed = ensureAssistantResponse(`${scene}${tail}`);
+      assert.match(fixed, /<\/webxr-html>\n<assistant-response>.+<\/assistant-response>$/);
+      assert.equal(fixed.split("<assistant-response>").length, 2);
+    }
   });
 });

@@ -72,9 +72,11 @@ function parseCurrentHtml(value: unknown): string | undefined | null {
   return value;
 }
 
-function streamEvent(type: "delta" | "doc" | "final" | "done" | "error", payload: Record<string, unknown> = {}) {
+function streamEvent(type: "delta" | "doc" | "scene" | "final" | "done" | "error", payload: Record<string, unknown> = {}) {
   return `${JSON.stringify({ type, ...payload })}\n`;
 }
+
+const DEFAULT_SUMMARY = "Listo, la experiencia ya tiene el cambio.";
 
 function hasValidAssistantResponse(value: string) {
   const matches = [...value.matchAll(/<assistant-response>([\s\S]*?)<\/assistant-response>/gi)];
@@ -82,8 +84,22 @@ function hasValidAssistantResponse(value: string) {
     value.split("<assistant-response>").length === 2 && value.split("</assistant-response>").length === 2;
 }
 
-function extractAssistantResponse(value: string) {
-  return value.match(/<assistant-response>[\s\S]*?<\/assistant-response>/i)?.[0] ?? "";
+/**
+ * El resumen de texto es secundario: si el modelo lo dejó sin cerrar, repetido o vacío, se arma uno
+ * con lo que haya llegado en vez de pedir otra llamada al modelo.
+ */
+export function ensureAssistantResponse(value: string) {
+  if (hasValidAssistantResponse(value)) return value;
+  const open = value.indexOf("<assistant-response>");
+  const body = open === -1 ? value : value.slice(0, open);
+  const partial = open === -1 ? "" : value.slice(open + "<assistant-response>".length)
+    .split(/<\/?assistant-response>/i)[0]
+    .trim();
+  const hasExperience = /<webxr-html>[\s\S]*?<\/webxr-html>/i.test(value);
+  // Sin experiencia ni bloque, el texto suelto del modelo es la respuesta conversacional.
+  const loose = hasExperience ? "" : body.replace(/<\/?[\w-]+>/g, "").trim();
+  const summary = partial || loose || (hasExperience ? DEFAULT_SUMMARY : "No obtuve una respuesta. Intenta de nuevo.");
+  return `${hasExperience ? body.trimEnd() : ""}\n<assistant-response>${summary}</assistant-response>`.trimStart();
 }
 
 export interface AppOptions {
@@ -237,10 +253,13 @@ export function createApp({
 
       let completedResponse = "";
       // Los documentos intermedios de la base van como eventos aparte: el cliente los aplica en vivo.
+      // La escena final sale apenas se cierra el bloque de operaciones, antes del resumen.
       const write = (chunk: ReplyChunk) => {
         if (typeof chunk === "string") {
           completedResponse += chunk;
           response.write(streamEvent("delta", { text: chunk }));
+        } else if (chunk.kind === "scene") {
+          response.write(streamEvent("scene", { html: ensurePreviewMonitor(chunk.html) }));
         } else {
           response.write(streamEvent("doc", { doc: chunk.doc }));
         }
@@ -253,25 +272,7 @@ export function createApp({
           write(result.value);
         }
 
-        if (!hasValidAssistantResponse(completedResponse)) {
-          const summaryMessages: ChatMessage[] = [
-            ...messages.slice(-1),
-            { role: "model", content: completedResponse.replace(/<webxr-html>[\s\S]*?<\/webxr-html>/i, "<webxr-html>(experiencia ya generada)</webxr-html>") },
-            {
-              role: "user",
-              content: "Tu respuesta anterior no incluyó un bloque <assistant-response> válido y completo con un resumen no vacío. Conserva exactamente la experiencia ya generada; no la vuelvas a generar ni la modifiques. Devuelve únicamente este formato, con un resumen breve que explique qué se creó o cambió, cómo interactuar con la experiencia y los requisitos relevantes: <assistant-response>resumen en Markdown</assistant-response>.",
-            },
-          ];
-          const summaryStream = await generateReply(summaryMessages, currentHtml);
-          let summaryText = "";
-          for await (const chunk of summaryStream) if (typeof chunk === "string") summaryText += chunk;
-          const summaryBlock = extractAssistantResponse(summaryText);
-          if (hasValidAssistantResponse(summaryBlock)) {
-            completedResponse += `\n${summaryBlock}`;
-            response.write(streamEvent("delta", { text: `\n${summaryBlock}` }));
-          }
-        }
-
+        completedResponse = ensureAssistantResponse(completedResponse);
         const instrumentedResponse = instrumentGeneratedResponse(completedResponse);
         response.write(streamEvent("final", { text: instrumentedResponse }));
         response.write(streamEvent("done"));

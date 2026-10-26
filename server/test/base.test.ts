@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { applyOps, parseOps } from "../src/base/ops.js";
+import { applyOps, applyOpsLenient, parseOps } from "../src/base/ops.js";
 import { extractBaseDoc, isBaseHtml, renderBaseHtml } from "../src/base/render.js";
 import { emptyDoc, validateDoc } from "../src/base/schema.js";
 import { ensurePreviewMonitor } from "../src/previewMonitor.js";
@@ -90,5 +90,39 @@ describe("HTML de la base", () => {
 
   it("no confunde otro HTML con la base", () => {
     assert.equal(extractBaseDoc("<!doctype html><html><body>hola</body></html>"), undefined);
+  });
+});
+
+describe("aplicación tolerante de operaciones", () => {
+  it("descarta solo la pieza inválida y aplica el resto", () => {
+    const { doc, problems } = applyOpsLenient(emptyDoc(), `{"op":"set","kind":"entity","id":"a","value":{"shape":"box"}}
+{"op":"set","kind":"entity","id":"b","value":{"shape":"hexagono"}}
+{"op":"set","kind":"entity","id":"c","value":{"shape":"sphere","parent":"b"}}
+no es json
+{"op":"set","kind":"ui","id":"panel","value":{"type":"panel","title":"Hola"}}`);
+    assert.equal(doc.entities.a.shape, "box");
+    assert.equal(doc.ui.panel.title, "Hola");
+    assert.equal(doc.entities.b, undefined);
+    assert.equal(doc.entities.c, undefined, "el hijo de una pieza descartada también sale");
+    assert.ok(problems.some(problem => problem.id === "b" && problem.line?.includes("hexagono")));
+    assert.ok(problems.some(problem => problem.line === "no es json"));
+    assert.doesNotThrow(() => validateDoc(doc));
+  });
+
+  it("detecta scripts con error de sintaxis sin ejecutarlos", () => {
+    const { doc, problems } = applyOpsLenient(emptyDoc(), `{"op":"set","kind":"script","id":"roto","value":"ctx.onTick(( => {"}
+{"op":"set","kind":"script","id":"bien","value":"globalThis.__ejecutado = true;"}`);
+    assert.equal(doc.scripts.roto, undefined);
+    assert.ok(doc.scripts.bien);
+    assert.equal((globalThis as Record<string, unknown>).__ejecutado, undefined);
+    assert.ok(problems.some(problem => problem.kind === "script" && problem.id === "roto"));
+  });
+
+  it("un entorno inválido vuelve al anterior sin perder lo demás", () => {
+    const { doc, problems } = applyOpsLenient(emptyDoc(), `{"op":"env","value":{"sky":"azul"}}
+{"op":"set","kind":"entity","id":"a","value":{"shape":"box"}}`);
+    assert.deepEqual(doc.environment, emptyDoc().environment);
+    assert.ok(doc.entities.a);
+    assert.ok(problems.some(problem => problem.kind === "environment"));
   });
 });

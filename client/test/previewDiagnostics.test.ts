@@ -26,10 +26,10 @@ describe("clasificación de errores de preview", () => {
     assert.match(errorsPrompt([fatal]), /^<ERRORS>[\s\S]*c\.easing is not a function[\s\S]*<\/ERRORS>$/);
   });
 
-  it("envía la falta de respuesta visible al mismo flujo de autorreparación", () => {
+  it("la falta de resumen no dispara una corrección", () => {
     const missingResponse = classifyPreviewDiagnostic({ type: "missing-response", details: {} });
 
-    assert.equal(missingResponse.severity, "fatal");
-    assert.match(errorsPrompt([missingResponse]), /<assistant-response> completo/);
+    assert.equal(missingResponse.severity, "warning");
+    assert.equal(errorsPrompt([missingResponse]), "<ERRORS>\n\n</ERRORS>");
   });
 });

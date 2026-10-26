@@ -1,4 +1,4 @@
-import { GoogleGenAI, type Content } from "@google/genai";
+import { type Content, type GenerateContentConfig, GoogleGenAI, type ThinkingLevel } from "@google/genai";
 import type { ChatMessage, GenerateReply } from "./types.js";
 import { stripPreviewMonitor } from "./previewMonitor.js";
 import { extractBaseDoc } from "./base/render.js";
@@ -15,8 +15,9 @@ Cuando haya que crear o cambiar la experiencia, responde exactamente así, sin b
 una operación JSON por línea
 </webxr-ops>
 <assistant-response>
-Resumen en Markdown: qué se creó o cambió y cómo interactuar.
+Una sola oración corta (máximo 25 palabras): qué se creó o cambió.
 </assistant-response>
+Lo que importa es la experiencia: escribe primero las operaciones y después el resumen, sin listas ni detalles técnicos. Las instrucciones de uso van en el panel de la escena, no en el resumen.
 
 Si la solicitud es solo conversacional, responde únicamente <assistant-response>...</assistant-response> y la experiencia queda igual.
 
@@ -83,8 +84,18 @@ CALIDAD
 - Nunca reduzcas lo pedido para que quepa: si algo necesita lógica, usa un script.
 - Antes de responder revisa ids, referencias de parent y target, nombres de propiedades y que cada línea sea JSON válido.
 
+ERRORES FRECUENTES (evítalos: cada uno obliga a una corrección y hace esperar al usuario)
+- {"do":"set"} siempre lleva "prop" y "value": {"do":"set","target":"panel_info","prop":"text","value":"..."}. Para cambiar título y texto de un panel van dos acciones set, una con prop "title" y otra con prop "text".
+- Colores solo en hexadecimal #RRGGBB ("#ff0000"), nunca nombres ("red"), rgb() ni transparencias en color (usa opacity).
+- Solo las propiedades listadas arriba. Lo que no está (material, animation, geometry, onClick, class, src, value en entidades) va dentro de "components" o en "on"; un panel se arma con title y text, no con children.
+- merge solo sobre ids que ya existen en el documento vigente; para algo nuevo, set con el elemento completo.
+- parent de una entidad apunta a otra entidad que exista; parent de interfaz apunta a un panel.
+- Los ids no repiten nombre entre entidades e interfaz: si la entidad es "tierra", su panel es "panel_tierra".
+- position, rotation, scale y size son siempre [x,y,z] con tres números.
+- Scripts: JavaScript válido en modo estricto, sin import ni export de nivel superior (usa await ctx.import(url) dentro de una función async), sin variables sin declarar y sin tocar elementos antes de pedirlos con ctx.entity o ctx.ui.
+
 REPARACIÓN AUTOMÁTICA
-Si el mensaje trae <ERRORS>...</ERRORS>, son errores reales del navegador al ejecutar la experiencia vigente, con su origen (script, entidad o acción). Corrige las causas con operaciones sobre el documento vigente (normalmente set del script o merge de la entidad) sin quitar funcionalidad y explica la corrección en el resumen. Si una operación tuya no se pudo aplicar, recibirás el motivo: devuelve todas las operaciones corregidas, desde el documento vigente.
+Si el mensaje trae <ERRORS>...</ERRORS>, son errores reales del navegador al ejecutar la experiencia vigente, con su origen (script, entidad o acción). Devuelve solo las operaciones mínimas que corrigen la causa (normalmente un set del script o un merge de la entidad), sin rehacer ni repetir lo que ya funciona y sin quitar funcionalidad, y un resumen de una línea. Si una parte de tu respuesta no se pudo aplicar, recibirás cuáles y por qué: el resto ya quedó aplicado, así que devuelve solo las operaciones que corrigen esas partes.
 
 OTRO MOTOR (solo si el usuario lo pide explícitamente o la experiencia es imposible en A-Frame)
 Puedes devolver un documento HTML completo en <webxr-html>...</webxr-html> seguido de <assistant-response>. Ese documento reemplaza la base y pierde la actualización en vivo. Reglas: un solo archivo con <!doctype html>, dependencias HTTPS con versión fija y cargadas una vez, sin imports bare, entrada a XR solo por gesto del usuario, sin acceso al documento padre ni scripts de captura de errores (el sistema los agrega).
@@ -106,7 +117,10 @@ export function currentExperienceContext(currentHtml?: string) {
   };
 }
 
-export function createGeminiGenerator(apiKey: string, model: string): GenerateReply {
+export const THINKING_LEVELS = ["minimal", "low", "medium", "high"] as const;
+export type ThinkingLevelName = typeof THINKING_LEVELS[number];
+
+export function createGeminiGenerator(apiKey: string, model: string, thinkingLevel?: ThinkingLevelName): GenerateReply {
   const ai = new GoogleGenAI({ apiKey });
 
   return async (messages: ChatMessage[], currentHtml?: string) => {
@@ -119,9 +133,11 @@ export function createGeminiGenerator(apiKey: string, model: string): GenerateRe
     const lastPart = contents.at(-1)?.parts?.[0];
     if (lastPart && "text" in lastPart) lastPart.text = `${lastPart.text}\n\n${context.text}`;
 
-    const config = {
+    const config: GenerateContentConfig = {
       systemInstruction: SYSTEM_INSTRUCTION,
       temperature: 0.45,
+      // Menos razonamiento interno = la primera operación llega antes. Sin valor, el del modelo.
+      ...(thinkingLevel ? { thinkingConfig: { thinkingLevel: thinkingLevel.toUpperCase() as ThinkingLevel } } : {}),
     };
     const textOf = async function* (stream: AsyncIterable<{ text?: string }>) {
       for await (const chunk of stream) if (chunk.text) yield chunk.text;
@@ -130,12 +146,12 @@ export function createGeminiGenerator(apiKey: string, model: string): GenerateRe
 
     return processModelStream(textOf(responseStream), {
       baseDoc: context.doc,
-      retry: async (failedResponse, reason) => textOf(await ai.models.generateContentStream({
+      retry: async (failedResponse, problems) => textOf(await ai.models.generateContentStream({
         model,
         contents: [
           ...contents,
           { role: "model", parts: [{ text: failedResponse }] },
-          { role: "user", parts: [{ text: `Las operaciones no se pudieron aplicar: ${reason}\nDevuelve de nuevo la respuesta completa con todas las operaciones corregidas, aplicadas sobre el documento vigente (no sobre tu intento anterior), y el resumen.` }] },
+          { role: "user", parts: [{ text: `Todo lo demás ya se aplicó. Estas partes no se pudieron aplicar y se descartaron:\n${problems}\nDevuelve solo <webxr-ops> con las operaciones que las corrigen (set con el elemento completo y corregido, sobre el documento que ya incluye lo demás) y una línea en <assistant-response>. No repitas lo que ya se aplicó.` }] },
         ],
         config,
       })),

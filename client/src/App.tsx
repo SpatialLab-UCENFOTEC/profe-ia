@@ -38,6 +38,7 @@ type StreamEvent =
   | { type: "delta"; text: string }
   | { type: "final"; text: string }
   | { type: "doc"; doc: BaseDocument }
+  | { type: "scene"; html: string }
   | { type: "done" }
   | { type: "error"; message: string };
 
@@ -48,6 +49,9 @@ const SUGGESTIONS = [
 ];
 const MAX_CONTEXT_MESSAGES = 30;
 const MAX_REPAIR_ATTEMPTS = 2;
+// Junta los errores que salen juntos al arrancar sin demorar la corrección.
+const REPAIR_DEBOUNCE_MS = 250;
+const MISSING_SUMMARY = "Listo, la experiencia ya tiene el cambio.";
 const PREVIEW_STARTUP_TIMEOUT_MS = 12_000;
 const DEV_EXPERIENCE_HTML = `<!doctype html>
 <html lang="es">
@@ -163,6 +167,9 @@ export default function App() {
   const pendingMessageIdRef = useRef<string | undefined>(undefined);
   const originalMessageIdRef = useRef<string | undefined>(undefined);
   const correctionResponsesRef = useRef<string[]>([]);
+  // Última experiencia que pasó el chequeo y el mensaje que la muestra (el resumen puede llegar después).
+  const readyHtmlRef = useRef("");
+  const readyMessageIdRef = useRef<string | undefined>(undefined);
   const handleDiagnosticRef = useRef<(diagnostic: PreviewDiagnostic) => void>(() => undefined);
   // La corrida que se escucha puede cambiar sin recargar el iframe (base en vivo), así que el filtro va en un ref.
   const activeRunIdRef = useRef<string>(previewRunId);
@@ -292,8 +299,9 @@ export default function App() {
         correctionResponsesRef.current = [];
       }
       const nextRunId = crypto.randomUUID();
-      // Con la base ya cargada, la versión final se aplica en vivo; una corrección siempre recarga desde cero.
-      const liveDoc = !isRepair && frameReadyRef.current && isBaseHtml(frameHtmlRef.current) && isBaseHtml(committedHtml)
+      // Con la base ya cargada, la versión final (también una corrección) se aplica en vivo sin recargar:
+      // la base reinicia sola los scripts cuando cambian.
+      const liveDoc = frameReadyRef.current && isBaseHtml(frameHtmlRef.current) && isBaseHtml(committedHtml)
         ? extractBaseDocument(committedHtml)
         : undefined;
       pendingDraftRef.current = undefined;
@@ -332,6 +340,8 @@ export default function App() {
       const event = JSON.parse(line) as StreamEvent;
       if (event.type === "delta") updateParsedContent(event.text);
       if (event.type === "doc") showDraft(event.doc);
+      // La escena final llega antes que el resumen: se muestra y se comprueba sin esperarlo.
+      if (event.type === "scene") commitCompletedHtml(event.html);
       if (event.type === "final") {
         const finalParser = new WebXrStreamParser();
         finalParser.push(event.text);
@@ -343,24 +353,30 @@ export default function App() {
           const isMissingResponse = !finalSnapshot.responseComplete || !finalSnapshot.response.trim();
           if (!hasUsableHtml || !isMissingResponse) throw parseError;
 
-          const completedHtml = finalSnapshot.html.trim();
-          finalizedResult = { html: completedHtml, response: "" };
-          commitCompletedHtml(completedHtml);
-          handleDiagnosticRef.current({ type: "missing-response", details: {} });
-          return;
+          // Sin resumen la experiencia vale igual: se muestra con un texto genérico, sin pedir otra llamada.
+          finalizedResult = { html: finalSnapshot.html.trim(), response: MISSING_SUMMARY };
         }
+        // Si la escena ya quedó lista mientras llegaba el resumen, el mensaje se muestra directo.
+        const alreadyReady = Boolean(finalizedResult.html) && readyHtmlRef.current === finalizedResult.html;
         const modelMessage: Message = {
           id: crypto.randomUUID(),
           role: "model",
           content: finalizedResult.response,
           html: finalizedResult.html,
-          internal: Boolean(finalizedResult.html),
+          internal: Boolean(finalizedResult.html) && (isRepair || !alreadyReady),
         };
         storedMessageId = modelMessage.id;
-        if (finalizedResult.html && !isRepair) originalMessageIdRef.current = modelMessage.id;
         if (finalizedResult.html && isRepair) correctionResponsesRef.current.push(finalizedResult.response);
-        pendingMessageIdRef.current = finalizedResult.html ? modelMessage.id : undefined;
-        setMessages([...nextMessages, modelMessage]);
+        if (alreadyReady) {
+          if (!isRepair) readyMessageIdRef.current = modelMessage.id;
+          const correctedId = isRepair ? readyMessageIdRef.current : undefined;
+          const corrections = [...correctionResponsesRef.current];
+          setMessages([...nextMessages, modelMessage].map(message => message.id === correctedId ? { ...message, corrections } : message));
+        } else {
+          if (finalizedResult.html && !isRepair) originalMessageIdRef.current = modelMessage.id;
+          pendingMessageIdRef.current = finalizedResult.html ? modelMessage.id : undefined;
+          setMessages([...nextMessages, modelMessage]);
+        }
         finalMessageStored = true;
         if (finalizedResult.html) commitCompletedHtml(finalizedResult.html);
         if (finalizedResult.response) setStreamingSummary(finalizedResult.response);
@@ -473,11 +489,13 @@ export default function App() {
         if (currentCandidateRef.current !== candidateAtReady) return;
         if (fatalDiagnosticsRef.current.length > 0) return;
         setLastCompletedHtml(currentCandidateRef.current);
+        readyHtmlRef.current = currentCandidateRef.current;
         setPreviewStatus("ready");
         setIsPreviewBuilding(false);
         setStreamingHtml(null);
         repairAttemptRef.current = 0;
         const finalMessageId = originalMessageIdRef.current ?? pendingMessageIdRef.current;
+        readyMessageIdRef.current = finalMessageId ?? readyMessageIdRef.current;
         const corrections = [...correctionResponsesRef.current];
         if (finalMessageId) {
           setMessages(previous => previous.map(message => message.id === finalMessageId
@@ -511,7 +529,7 @@ export default function App() {
         currentHtml: currentCandidateRef.current,
         isRepair: true,
       });
-    }, 700);
+    }, REPAIR_DEBOUNCE_MS);
   };
 
   useEffect(() => {

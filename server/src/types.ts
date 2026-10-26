@@ -13,7 +13,13 @@ export interface DocUpdate {
   doc: BaseDoc;
 }
 
-export type ReplyChunk = string | DocUpdate;
+/** Escena final de la base, lista para mostrarse antes de que termine el resumen. */
+export interface SceneUpdate {
+  kind: "scene";
+  html: string;
+}
+
+export type ReplyChunk = string | DocUpdate | SceneUpdate;
 
 export type GenerateReply = (
   messages: ChatMessage[],

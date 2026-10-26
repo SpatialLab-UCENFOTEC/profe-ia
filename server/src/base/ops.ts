@@ -1,6 +1,7 @@
-import { type BaseDoc, DocError, emptyDoc, validateDoc } from "./schema.js";
+import { type BaseDoc, DocError, type DocProblem, emptyDoc, pruneInvalid, validateDoc } from "./schema.js";
 
-// Cambios que el modelo pide sobre el documento. Se aplican todos o ninguno.
+// Cambios que el modelo pide sobre el documento. applyOps aplica todos o ninguno; applyOpsLenient
+// aplica lo que sirve y devuelve lo que falló.
 export type Op =
   | { op: "reset" }
   | { op: "meta"; value: { title?: string; instructions?: string } }
@@ -53,9 +54,13 @@ function checkOp(value: unknown, index: number): Op {
   }
 }
 
+function opsBodyText(text: string) {
+  return text.split("\n").filter(line => !line.trim().startsWith("```")).join("\n").trim();
+}
+
 // Acepta una operación JSON por línea o una lista JSON.
 export function parseOps(text: string): Op[] {
-  const body = text.split("\n").filter(line => !line.trim().startsWith("```")).join("\n").trim();
+  const body = opsBodyText(text);
   if (!body) return [];
   if (body.startsWith("[")) {
     let list: unknown;
@@ -144,4 +149,60 @@ export function applyOps(doc: BaseDoc, ops: Op[]): BaseDoc {
     if (error instanceof DocError) throw new DocError(`Después de aplicar las operaciones: ${error.message}`);
     throw error;
   }
+}
+
+export interface OpProblem extends Partial<DocProblem> {
+  message: string;
+  /** Texto de la operación que falló, si el problema viene de una sola línea. */
+  line?: string;
+}
+
+export interface LenientResult {
+  doc: BaseDoc;
+  problems: OpProblem[];
+}
+
+/**
+ * Aplica operación por operación: una línea rota o una pieza inválida no tira abajo las demás.
+ * Lo que falla queda en `problems` para pedirle al modelo solo esa corrección.
+ */
+export function applyOpsLenient(doc: BaseDoc, text: string): LenientResult {
+  const body = opsBodyText(text);
+  const problems: OpProblem[] = [];
+  const parsed: Array<{ op: Op; line: string }> = [];
+  if (body.startsWith("[")) {
+    try { parseOps(body).forEach((op, index) => parsed.push({ op, line: JSON.stringify(op) ?? String(index) })); }
+    catch (error) {
+      if (!(error instanceof DocError)) throw error;
+      problems.push({ message: error.message });
+    }
+  } else {
+    const lines = body.split("\n").map(line => line.trim()).filter(line => line && !line.startsWith("//") && line !== "[" && line !== "]").map(line => line.replace(/,$/, ""));
+    if (lines.length > MAX_OPS) throw new DocError(`Hay más de ${MAX_OPS} operaciones.`);
+    lines.forEach((line, index) => {
+      try { parsed.push({ op: parseOpLine(line, index), line }); }
+      catch (error) {
+        if (!(error instanceof DocError)) throw error;
+        problems.push({ message: error.message, line });
+      }
+    });
+  }
+
+  let next = doc;
+  parsed.forEach(({ op, line }, index) => {
+    try {
+      next = applyOp(next, op, index);
+    } catch (error) {
+      if (!(error instanceof DocError)) throw error;
+      problems.push({ message: error.message, line, ...("kind" in op ? { kind: op.kind, id: op.id } : {}) });
+    }
+  });
+
+  const pruned = pruneInvalid(next, doc);
+  for (const problem of pruned.problems) {
+    // La línea que creó o tocó la pieza ayuda al modelo a corregirla sin rehacer lo demás.
+    const source = [...parsed].reverse().find(({ op }) => "kind" in op && op.kind === problem.kind && op.id === problem.id);
+    problems.push({ ...problem, line: source?.line });
+  }
+  return { doc: pruned.doc, problems };
 }
