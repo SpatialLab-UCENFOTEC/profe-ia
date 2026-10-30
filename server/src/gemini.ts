@@ -2,6 +2,7 @@ import { GoogleGenAI, type Content } from "@google/genai";
 import type { ChatMessage, GenerateReply } from "./types.js";
 import { stripPreviewMonitor } from "./previewMonitor.js";
 import { compileSceneResponse, extractSceneSpec } from "./sceneTemplate.js";
+import { applyPatchResponse } from "./patch.js";
 
 export const SYSTEM_INSTRUCTION = `Eres Orbit XR, un arquitecto y profesor experto en experiencias WebXR para la web.
 
@@ -43,6 +44,11 @@ Si la solicitud es únicamente conceptual o conversacional y no requiere cambiar
 RESPUESTA EN MARKDOWN
 </assistant-response>
 
+PARCHES (solo si recibes una escena o documento vigente)
+Para cambios localizados responde con un parche en lugar de la escena o el documento completos: <webxr-patch>PARCHE</webxr-patch> seguido de <assistant-response>…</assistant-response>. El servidor lo aplica sobre la versión vigente. Usa documento completo si es una creación nueva o si cambias gran parte de la experiencia.
+- Si el vigente es <current-webxr-scene>, PARCHE es JSON: {"ops":[...]} con operaciones en orden: {"op":"add","object":{objeto completo}}, {"op":"update","id":"id","set":{"campo":valor,"campoAEliminar":null}}, {"op":"remove","id":"id"}, {"op":"setRoot","set":{"sky":"#RRGGBB","title":"..."}}. Respeta el esquema de la ruta rápida.
+- Si el vigente es <current-webxr-html>, PARCHE son una o más ediciones: <edit><search>texto copiado literalmente del documento vigente</search><replace>texto nuevo</replace></edit>. Cada search debe aparecer exactamente una vez, con el mínimo contexto necesario para ser único. Las ediciones se aplican en orden. No uses bloques de código Markdown.
+
 REPARACIÓN AUTOMÁTICA
 Si el mensaje del usuario contiene un bloque <ERRORS>...</ERRORS>, su contenido son errores y excepciones reales detectados en la consola del navegador al ejecutar el documento WebXR vigente. Debes corregir todas sus causas y devolver la escena compacta completa reparada o el documento HTML completo reparado, según corresponda. No te limites a explicar el error, no ocultes excepciones con try/catch y no elimines funcionalidad salvo que sea imprescindible para sustituir una API incompatible. Verifica especialmente imports de navegador, compatibilidad entre versiones, orden de carga, APIs de A-Frame/Three.js, promesas rechazadas y recursos que no pudieron cargar.
 
@@ -79,7 +85,7 @@ export function createGeminiGenerator(apiKey: string, model: string): GenerateRe
     });
 
     return (async function* () {
-      let mode: "unknown" | "scene" | "other" = "unknown";
+      let mode: "unknown" | "scene" | "patch" | "other" = "unknown";
       let buffered = "";
       for await (const chunk of responseStream) {
         const text = chunk.text;
@@ -87,19 +93,23 @@ export function createGeminiGenerator(apiKey: string, model: string): GenerateRe
         if (mode === "other") { yield text; continue; }
         buffered += text;
         if (mode === "unknown") {
-          if (buffered.trimStart().startsWith("<webxr-scene>")) mode = "scene";
+          const head = buffered.trimStart();
+          if (head.startsWith("<webxr-scene>")) mode = "scene";
+          else if (head.startsWith("<webxr-patch>")) mode = "patch";
           else if (buffered.includes(">") || buffered.length > 100) mode = "other";
         }
         if (mode === "other") { yield buffered; buffered = ""; }
       }
-      if (mode !== "scene") { if (buffered) yield buffered; return; }
+      if (mode !== "scene" && mode !== "patch") { if (buffered) yield buffered; return; }
+      const isPatch = buffered.trimStart().startsWith("<webxr-patch>");
       try {
-        yield compileSceneResponse(buffered);
+        yield isPatch ? applyPatchResponse(buffered, currentHtml) : compileSceneResponse(buffered);
       } catch (error) {
         const reason = error instanceof Error ? error.message : "Escena inválida";
+        const what = isPatch ? "El parche no se pudo aplicar" : "La escena compacta no se pudo construir";
         const fallback = await ai.models.generateContentStream({
           model,
-          contents: [...contents, { role: "model", parts: [{ text: buffered }] }, { role: "user", parts: [{ text: `La escena compacta no se pudo construir (${reason}). Devuelve ahora una experiencia completa usando exclusivamente el FORMATO HTML LIBRE. Conserva todos los requisitos originales.` }] }],
+          contents: [...contents, { role: "model", parts: [{ text: buffered }] }, { role: "user", parts: [{ text: `${what} (${reason}). Devuelve ahora una experiencia completa usando exclusivamente el FORMATO HTML LIBRE. Conserva todos los requisitos originales.` }] }],
           config,
         });
         for await (const chunk of fallback) if (chunk.text) yield chunk.text;
