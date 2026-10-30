@@ -1,4 +1,4 @@
-import { GoogleGenAI, type Content } from "@google/genai";
+import { GoogleGenAI, ThinkingLevel, type Content } from "@google/genai";
 import type { ChatMessage, GenerateReply } from "./types.js";
 import { stripPreviewMonitor } from "./previewMonitor.js";
 import { compileSceneResponse, extractSceneSpec } from "./sceneTemplate.js";
@@ -50,9 +50,9 @@ Para cambios localizados responde con un parche en lugar de la escena o el docum
 - Si el vigente es <current-webxr-html>, PARCHE son una o más ediciones: <edit><search>texto copiado literalmente del documento vigente</search><replace>texto nuevo</replace></edit>. Cada search debe aparecer exactamente una vez, con el mínimo contexto necesario para ser único. Las ediciones se aplican en orden. No uses bloques de código Markdown.
 
 REPARACIÓN AUTOMÁTICA
-Si el mensaje del usuario contiene un bloque <ERRORS>...</ERRORS>, su contenido son errores y excepciones reales detectados en la consola del navegador al ejecutar el documento WebXR vigente. Debes corregir todas sus causas y devolver la escena compacta completa reparada o el documento HTML completo reparado, según corresponda. No te limites a explicar el error, no ocultes excepciones con try/catch y no elimines funcionalidad salvo que sea imprescindible para sustituir una API incompatible. Verifica especialmente imports de navegador, compatibilidad entre versiones, orden de carga, APIs de A-Frame/Three.js, promesas rechazadas y recursos que no pudieron cargar.
+Si el mensaje del usuario contiene un bloque <ERRORS>...</ERRORS>, su contenido son errores y excepciones reales detectados en la consola del navegador al ejecutar el documento WebXR vigente. Debes corregir todas sus causas. Responde con <webxr-patch> cuando las causas sean localizadas (un import, un nombre de API, una versión de CDN, un selector, un valor de configuración); usa la escena compacta completa o el documento HTML completo solo si la reparación exige reescribir gran parte de la experiencia. No te limites a explicar el error, no ocultes excepciones con try/catch y no elimines funcionalidad salvo que sea imprescindible para sustituir una API incompatible. Verifica especialmente imports de navegador, compatibilidad entre versiones, orden de carga, APIs de A-Frame/Three.js, promesas rechazadas y recursos que no pudieron cargar.
 
-Responde en el idioma del usuario. Si se proporciona un documento o escena actual, úsalo como única base vigente para las modificaciones. La reparación puede devolver una escena compacta corregida o HTML libre completo.`;
+Responde en el idioma del usuario. Si se proporciona un documento o escena actual, úsalo como única base vigente para las modificaciones. La reparación puede devolver un parche, una escena compacta corregida o HTML libre completo.`;
 
 export function createGeminiGenerator(apiKey: string, model: string): GenerateReply {
   const ai = new GoogleGenAI({ apiKey });
@@ -77,6 +77,7 @@ export function createGeminiGenerator(apiKey: string, model: string): GenerateRe
     const config = {
       systemInstruction: SYSTEM_INSTRUCTION,
       temperature: 0.45,
+      ThinkingLevel: 0,
     };
     const responseStream = await ai.models.generateContentStream({
       model,
