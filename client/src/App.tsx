@@ -1,137 +1,17 @@
-import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { rehypeCollapsibleHeadings } from "./collapsibleHeadings";
+import { useEffect, useRef, useState } from "react";
 import { WebXrStreamParser, isCompleteHtmlDocument } from "./streamParser";
 import { classifyPreviewDiagnostic, errorsPrompt, type ClassifiedDiagnostic, type PreviewDiagnostic } from "./previewDiagnostics";
-
-type Role = "user" | "model";
-type PreviewMode = "closed" | "split" | "fullscreen";
-type AuthState = "checking" | "locked" | "authenticated";
-
-interface Message {
-  id: string;
-  role: Role;
-  content: string;
-  html?: string;
-  internal?: boolean;
-  corrections?: string[];
-}
-
-type PreviewStatus = "idle" | "generating" | "checking" | "ready" | "repairing" | "repair-failed";
-
-type DevScenarioId = "success" | "missing-response" | "missing-code" | "empty" | "corrections" | "generating" | "repair-failed";
-
-interface DevScenario {
-  id: DevScenarioId;
-  label: string;
-  question: string;
-  response?: string;
-  html?: string;
-  corrections?: string[];
-  status: PreviewStatus;
-  error?: string;
-}
-
-type StreamEvent =
-  | { type: "delta"; text: string }
-  | { type: "final"; text: string }
-  | { type: "done" }
-  | { type: "error"; message: string };
-
-const SUGGESTIONS = [
-  "Crea un sistema solar interactivo en WebXR",
-  "Diseña una galería virtual con A-Frame",
-  "Haz un juego de bloques 3D con Three.js",
-];
-const MAX_CONTEXT_MESSAGES = 30;
-const MAX_REPAIR_ATTEMPTS = 2;
-const PREVIEW_STARTUP_TIMEOUT_MS = 12_000;
-const DEV_EXPERIENCE_HTML = `<!doctype html>
-<html lang="es">
-<head><meta charset="utf-8"><title>Experiencia de auditoría</title></head>
-<body style="margin:0;display:grid;place-items:center;min-height:100vh;background:radial-gradient(circle at top,#164a98,#08090f);color:white;font-family:system-ui">
-  <main style="text-align:center"><div style="font-size:5rem">🪐</div><h1>Sistema solar interactivo</h1><p>Arrastra para explorar la escena.</p></main>
-</body>
-</html>`;
-const DEV_SCENARIOS: DevScenario[] = [
-  { id: "success", label: "Código + respuesta", question: "Crea un sistema solar interactivo.", response: "Creé un sistema solar interactivo. Arrastra para rotar la vista y selecciona un planeta para conocerlo.", html: DEV_EXPERIENCE_HTML, status: "ready" },
-  { id: "missing-response", label: "Sin respuesta", question: "Crea un sistema solar interactivo.", html: DEV_EXPERIENCE_HTML, status: "repairing" },
-  { id: "missing-code", label: "Sin código", question: "Crea un sistema solar interactivo.", response: "Preparé la experiencia solicitada, pero la respuesta no incluyó el documento HTML.", status: "idle", error: "La respuesta no contiene el código de la experiencia solicitado." },
-  { id: "empty", label: "Sin ninguno", question: "Crea un sistema solar interactivo.", status: "idle", error: "El modelo no devolvió código ni una respuesta para mostrar." },
-  { id: "corrections", label: "Con correcciones", question: "Crea un sistema solar interactivo.", response: "La experiencia está lista. Arrastra para explorar y selecciona los planetas para ver sus datos.", html: DEV_EXPERIENCE_HTML, corrections: ["Se corrigió una referencia inexistente al control de cámara.", "Se añadió una alternativa cuando WebXR no está disponible."], status: "ready" },
-  { id: "generating", label: "Generando", question: "Crea un sistema solar interactivo.", response: "Estoy preparando la escena y sus interacciones…", html: DEV_EXPERIENCE_HTML.slice(0, 330), status: "generating" },
-  { id: "repair-failed", label: "Corrección fallida", question: "Crea una experiencia con modelos 3D externos.", response: "Creé una galería inmersiva con modelos 3D.", html: DEV_EXPERIENCE_HTML, status: "repair-failed", error: "La experiencia sigue presentando errores después de dos intentos automáticos. Revisa los detalles o solicita un cambio manual." },
-];
-
-function Icon({ name }: { name: "send" | "expand" | "download" | "reload" | "back" }) {
-  const paths = {
-    send: <><path d="m4 12 16-8-6.2 16-2.4-6.4L4 12Z" /><path d="m11.4 13.6 3.7-3.7" /></>,
-    expand: <><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" /><path d="m3 8 6-6m12 6-6-6M3 16l6 6m12-6-6 6" /></>,
-    download: <><path d="M12 3v12m0 0 5-5m-5 5-5-5" /><path d="M5 20h14" /></>,
-    reload: <><path d="M20 7v5h-5" /><path d="M19 12a7 7 0 1 0-2 5" /></>,
-    back: <><path d="m15 18-6-6 6-6" /><path d="M9 12h11" /></>,
-  };
-
-  return <svg viewBox="0 0 24 24" aria-hidden="true" className="size-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
-}
-
-function Markdown({ children, collapsible = false }: { children: string; collapsible?: boolean }) {
-  return <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={collapsible ? [rehypeCollapsibleHeadings] : []}>{children}</ReactMarkdown></div>;
-}
-
-function TechnicalDetailsIcon() {
-  return <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.7 6.3a4 4 0 0 0-5 5L4 17v3h3l5.7-5.7a4 4 0 0 0 5-5l-2.4 2.4-3-3 2.4-2.4Z" /><path d="m6 18 1 1" /></svg>;
-}
-
-function AccessScreen({
-  password,
-  error,
-  isSubmitting,
-  onPasswordChange,
-  onSubmit,
-}: {
-  password: string;
-  error: string | null;
-  isSubmitting: boolean;
-  onPasswordChange: (password: string) => void;
-  onSubmit: (event: FormEvent) => void;
-}) {
-  return (
-    <main className="access-shell">
-      <div className="orb orb-one" /><div className="orb orb-two" />
-      <section className="access-card" aria-labelledby="access-title">
-        <div className="access-logo"><img src="/university-logo.png" alt="Logo de la universidad" /></div>
-        <p className="eyebrow">SpatialLab</p>
-        <h1 id="access-title">Acceso a ProfeIA</h1>
-        <p className="access-description">Ingresa la contraseña para comenzar a construir experiencias WebXR.</p>
-        <form onSubmit={onSubmit} className="access-form">
-          <label htmlFor="access-password">Contraseña</label>
-          <input
-            id="access-password"
-            type="password"
-            autoComplete="current-password"
-            autoFocus
-            required
-            value={password}
-            onChange={(event) => onPasswordChange(event.target.value)}
-            disabled={isSubmitting}
-          />
-          {error && <p role="alert" className="access-error">{error}</p>}
-          <button type="submit" disabled={isSubmitting || !password}>
-            {isSubmitting ? "Verificando…" : "Ingresar"}
-          </button>
-        </form>
-      </section>
-    </main>
-  );
-}
+import { MAX_CONTEXT_MESSAGES, MAX_REPAIR_ATTEMPTS, PREVIEW_STARTUP_TIMEOUT_MS } from "./constants";
+import type { DevScenario } from "./dev/devScenarios";
+import type { Message, PreviewMode, PreviewStatus, StreamEvent } from "./types";
+import { useAuth } from "./hooks/useAuth";
+import { AccessScreen } from "./components/AccessScreen";
+import { DevAuditPanel } from "./components/DevAuditPanel";
+import { ChatPane } from "./components/chat/ChatPane";
+import { PreviewPanel } from "./components/preview/PreviewPanel";
 
 export default function App() {
-  const [authState, setAuthState] = useState<AuthState>("checking");
-  const [password, setPassword] = useState("");
-  const [authError, setAuthError] = useState<string | null>(null);
-  const [isAuthenticating, setIsAuthenticating] = useState(false);
+  const { authState, password, setPassword, authError, isAuthenticating, login, lock } = useAuth();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -148,9 +28,7 @@ export default function App() {
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus>("idle");
   const [previewDiagnostics, setPreviewDiagnostics] = useState<ClassifiedDiagnostic[]>([]);
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const endRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const ghostCodeRef = useRef<HTMLPreElement>(null);
   const awaitingFinalLoadRef = useRef(false);
   const previewTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const repairTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -162,30 +40,6 @@ export default function App() {
   const originalMessageIdRef = useRef<string | undefined>(undefined);
   const correctionResponsesRef = useRef<string[]>([]);
   const handleDiagnosticRef = useRef<(diagnostic: PreviewDiagnostic) => void>(() => undefined);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    fetch("/api/auth/status", { signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) throw new Error();
-        const data = await response.json() as { authenticated?: boolean };
-        setAuthState(data.authenticated ? "authenticated" : "locked");
-      })
-      .catch((statusError: unknown) => {
-        if (statusError instanceof DOMException && statusError.name === "AbortError") return;
-        setAuthError("No se pudo conectar con el servidor. Inténtalo de nuevo.");
-        setAuthState("locked");
-      });
-    return () => controller.abort();
-  }, []);
-
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamingSummary, isLoading]);
-
-  useEffect(() => {
-    if (ghostCodeRef.current) ghostCodeRef.current.scrollTop = ghostCodeRef.current.scrollHeight;
-  }, [streamingHtml]);
 
   useEffect(() => () => {
     if (previewTimeoutRef.current) clearTimeout(previewTimeoutRef.current);
@@ -350,11 +204,7 @@ export default function App() {
       });
       if (!response.ok) {
         const data = await response.json().catch(() => ({})) as { error?: string };
-        if (response.status === 401) {
-          setPassword("");
-          setAuthError(data.error || "Tu sesión venció. Ingresa la contraseña nuevamente.");
-          setAuthState("locked");
-        }
+        if (response.status === 401) lock(data.error || "Tu sesión venció. Ingresa la contraseña nuevamente.");
         throw new Error(data.error || "No se pudo completar la solicitud.");
       }
       await processStream(response, nextMessages, options.isRepair);
@@ -434,40 +284,6 @@ export default function App() {
     window.addEventListener("message", receivePreviewDiagnostic);
     return () => window.removeEventListener("message", receivePreviewDiagnostic);
   }, [previewRunId]);
-
-  const handleSubmit = (event: FormEvent) => {
-    event.preventDefault();
-    void sendMessage(input);
-  };
-
-  const handleAccessSubmit = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!password || isAuthenticating) return;
-    setIsAuthenticating(true);
-    setAuthError(null);
-    try {
-      const response = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password }),
-      });
-      const data = await response.json().catch(() => ({})) as { error?: string };
-      if (!response.ok) throw new Error(data.error || "No se pudo verificar la contraseña.");
-      setPassword("");
-      setAuthState("authenticated");
-    } catch (caughtError) {
-      setAuthError(caughtError instanceof Error ? caughtError.message : "Ocurrió un error inesperado.");
-    } finally {
-      setIsAuthenticating(false);
-    }
-  };
-
-  const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      void sendMessage(input);
-    }
-  };
 
   const loadDevScenario = (scenario: DevScenario) => {
     if (!import.meta.env.DEV || isLoadingRef.current) return;
@@ -565,95 +381,44 @@ export default function App() {
   }
 
   if (authState === "locked") {
-    return <AccessScreen password={password} error={authError} isSubmitting={isAuthenticating} onPasswordChange={setPassword} onSubmit={handleAccessSubmit} />;
+    return <AccessScreen password={password} error={authError} isSubmitting={isAuthenticating} onPasswordChange={setPassword} onSubmit={login} />;
   }
 
   return (
     <main className="app-shell">
       <div className="orb orb-one" /><div className="orb orb-two" />
-      {import.meta.env.DEV && <details className="dev-audit-panel">
-        <summary>Auditar estados</summary>
-        <div>
-          <p>Respuestas locales predefinidas</p>
-          {DEV_SCENARIOS.map(scenario => <button type="button" key={scenario.id} onClick={() => loadDevScenario(scenario)} disabled={isLoading}>{scenario.label}</button>)}
-        </div>
-      </details>}
-      <section className={`chat-pane ${isPreviewVisible ? "with-preview" : ""}`}>
-        <header className="topbar">
-          <a className="brand-mark" href="/" aria-label="Volver al inicio de ProfeIA" title="Volver al inicio"><img src="/university-logo.png" alt="Logo de la universidad" /></a>
-          <div className="brand-copy"><h1>ProfeIA</h1><p>Construye mundos WebXR conversando</p></div>
-          {lastCompletedHtml && previewMode === "closed" && <button className="btn btn-sm btn-outline ml-auto" onClick={() => setPreviewMode("split")}>Abrir experiencia</button>}
-          <div className="connection-status"><span />Conectado con LLM</div>
-        </header>
-
-        <div className="conversation">
-          {visibleMessages.length === 0 ? (
-            <div className="welcome">
-              <div className="welcome-icon"><img src="/university-logo.png" alt="Logo de la universidad" /></div>
-              <p className="eyebrow">SpatialLab</p>
-              <h2>Describe el mundo que quieres crear</h2>
-              <p>ProfeIA escribe la experiencia, te explica cada decisión y la muestra mientras se está construyendo.</p>
-              <div className="suggestions">{SUGGESTIONS.map((suggestion) => <button key={suggestion} onClick={() => void sendMessage(suggestion)}>{suggestion}</button>)}</div>
-            </div>
-          ) : (
-            <div className="message-list" aria-live="polite">
-              {visibleMessages.map((message) => (
-                <article key={message.id} className={`message ${message.role}`}>
-                  <div className="message-label">{message.role === "user" ? "Tú" : "ProfeIA"}</div>
-                  <div className="message-card">
-                    {message.html && <details className="code-disclosure"><summary>HTML generado <span>{message.html.length.toLocaleString()} caracteres</span></summary><pre><code>{message.html}</code></pre></details>}
-                    <Markdown collapsible={message.role === "model"}>{message.content}</Markdown>
-                    {message.corrections && message.corrections.length > 0 && <details className="corrections-disclosure">
-                      <summary><TechnicalDetailsIcon /><span>Detalles técnicos de las correcciones</span><small>{message.corrections.length}</small></summary>
-                      <div className="corrections-list">{message.corrections.map((correction, index) => <section key={`${index}-${correction}`}><strong>Corrección {index + 1}</strong><Markdown>{correction}</Markdown></section>)}</div>
-                    </details>}
-                  </div>
-                </article>
-              ))}
-              {isLoading && <article className="message model"><div className="message-label">ProfeIA</div><div className="message-card streaming-card">{streamingHtml && <details className="code-disclosure"><summary>Generando HTML…</summary><pre><code>{streamingHtml}</code></pre></details>}{streamingSummary ? <Markdown collapsible>{streamingSummary}</Markdown> : <div className="typing"><i /><i /><i /></div>}</div></article>}
-              <div ref={endRef} />
-            </div>
-          )}
-        </div>
-
-        <div className="composer-wrap">
-          {error && <div role="alert" className="error-banner"><span>{error}</span><button onClick={() => setError(null)} aria-label="Cerrar aviso">✕</button></div>}
-          <form onSubmit={handleSubmit} className="composer">
-            <textarea ref={textareaRef} placeholder="Describe una experiencia o pide un cambio…" rows={1} maxLength={8000} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={handleKeyDown} disabled={isLoading} aria-label="Mensaje" />
-            <button type="submit" className="send-button" disabled={isLoading || !input.trim()} aria-label="Enviar mensaje"><Icon name="send" /></button>
-          </form>
-          <p>Enter para enviar · Shift + Enter para nueva línea</p>
-        </div>
-      </section>
-
-      {isPreviewVisible && <aside className={`preview-panel ${previewMode === "fullscreen" ? "fullscreen" : ""}`} aria-label="Vista previa WebXR">
-        <div className="preview-toolbar">
-          <div><span className={previewStatus === "ready" ? "live-dot" : "live-dot pulsing"} /><strong>{previewStatusLabel}</strong></div>
-          <div className="toolbar-actions">
-            <button onClick={reloadPreview} title="Recargar preview" aria-label="Recargar preview"><Icon name="reload" /></button>
-            <button onClick={downloadHtml} disabled={!lastCompletedHtml} title="Descargar HTML" aria-label="Descargar HTML"><Icon name="download" /></button>
-            <button onClick={() => setPreviewMode("fullscreen")} title="Ver por completo" aria-label="Ver por completo"><Icon name="expand" /></button>
-            <button onClick={() => setPreviewMode("closed")} className="close-preview" aria-label="Cerrar preview">✕</button>
-          </div>
-        </div>
-        <div className={`preview-stage ${isPreviewBuilding ? "is-building" : ""}`}>
-          {previewHtml ? (
-            <iframe ref={iframeRef} key={iframeKey} title="Experiencia WebXR generada" srcDoc={instrumentedPreviewHtml} onLoad={handlePreviewLoaded} sandbox="allow-scripts allow-forms allow-pointer-lock allow-downloads" allow="xr-spatial-tracking; fullscreen; accelerometer; gyroscope" />
-          ) : (
-            <div className="preview-placeholder" aria-hidden="true"><img src="/university-logo.png" alt="Logo de la universidad" /></div>
-          )}
-          {isPreviewBuilding && <div className="build-overlay" role="status" aria-live="polite">
-            <div className="liquid-lens"><span /><span /><span /></div>
-            {streamingHtml && <pre ref={ghostCodeRef} className="ghost-code" aria-hidden="true"><code>{streamingHtml}</code></pre>}
-            <div className="build-status">
-              {previewStatus !== "repair-failed" && <div className="build-spinner" />}
-              <strong>{previewStatus === "repairing" ? "Corrigiendo la experiencia…" : previewStatus === "checking" ? "Comprobando que todo funcione…" : previewStatus === "repair-failed" ? "No se pudo validar la experiencia" : "Generando el código…"}</strong>
-              <small>{previewStatus === "repairing" ? `${previewDiagnostics.filter(item => item.severity === "fatal").length} error(es) detectado(s)` : previewStatus === "checking" ? "La interacción se habilitará al terminar el chequeo" : previewStatus === "repair-failed" ? "Puedes recargar para volver a comprobar o solicitar un cambio" : "La experiencia se está armando en segundo plano"}</small>
-            </div>
-          </div>}
-        </div>
-        {previewMode === "fullscreen" && <button className="floating-back" onClick={() => setPreviewMode("split")}><Icon name="back" /> Volver al chat</button>}
-      </aside>}
+      {import.meta.env.DEV && <DevAuditPanel disabled={isLoading} onLoad={loadDevScenario} />}
+      <ChatPane
+        messages={visibleMessages}
+        isLoading={isLoading}
+        isPreviewVisible={isPreviewVisible}
+        showOpenPreview={Boolean(lastCompletedHtml) && previewMode === "closed"}
+        streamingHtml={streamingHtml}
+        streamingSummary={streamingSummary}
+        input={input}
+        error={error}
+        textareaRef={textareaRef}
+        onOpenPreview={() => setPreviewMode("split")}
+        onInputChange={setInput}
+        onSend={(content) => void sendMessage(content)}
+        onDismissError={() => setError(null)}
+      />
+      {isPreviewVisible && <PreviewPanel
+        previewMode={previewMode}
+        previewStatus={previewStatus}
+        statusLabel={previewStatusLabel}
+        isBuilding={isPreviewBuilding}
+        streamingHtml={streamingHtml}
+        html={instrumentedPreviewHtml}
+        iframeKey={iframeKey}
+        iframeRef={iframeRef}
+        fatalCount={previewDiagnostics.filter(item => item.severity === "fatal").length}
+        canDownload={Boolean(lastCompletedHtml)}
+        onLoad={handlePreviewLoaded}
+        onReload={reloadPreview}
+        onDownload={downloadHtml}
+        onModeChange={setPreviewMode}
+      />}
     </main>
   );
 }
