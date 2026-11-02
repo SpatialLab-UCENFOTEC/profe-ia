@@ -1,7 +1,7 @@
 export const SUGGESTIONS = [
-  "Crea un sistema solar interactivo en WebXR",
-  "Diseña una galería virtual con A-Frame",
-  "Haz un juego de bloques 3D con Three.js",
+  "Crea un sistema solar interactivo",
+  "Haz una simulación de diferentes algoritmos de sorting",
+  "Crea una visualización de 5 estructuras de datos",
 ];
 export const MAX_CONTEXT_MESSAGES = 30;
 export const MAX_REPAIR_ATTEMPTS = 2;
