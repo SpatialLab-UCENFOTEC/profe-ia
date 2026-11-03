@@ -21,9 +21,9 @@ export function BuildOverlay({
       <div className="liquid-lens"><span /><span /><span /></div>
       {streamingHtml && <pre ref={ghostCodeRef} className="ghost-code" aria-hidden="true"><code>{streamingHtml}</code></pre>}
       <div className="build-status">
-        {previewStatus !== "repair-failed" && <div className="build-spinner" />}
-        <strong>{previewStatus === "repairing" ? "Corrigiendo la experiencia…" : previewStatus === "checking" ? "Comprobando que todo funcione…" : previewStatus === "repair-failed" ? "No se pudo validar la experiencia" : "Generando el código…"}</strong>
-        <small>{previewStatus === "repairing" ? `${fatalCount} error(es) detectado(s)` : previewStatus === "checking" ? "La interacción se habilitará al terminar el chequeo" : previewStatus === "repair-failed" ? "Puedes recargar para volver a comprobar o solicitar un cambio" : "La experiencia se está armando en segundo plano"}</small>
+        {previewStatus !== "repair-failed" && <div className="build-sweep" aria-hidden="true" />}
+        <strong>{previewStatus === "repairing" ? "Corrigiendo la experiencia…" : previewStatus === "checking" ? "Comprobando que todo funcione…" : previewStatus === "repair-failed" ? "No se pudo validar la experiencia" : "Generando experiencia..."}</strong>
+        {(previewStatus === "repairing" || previewStatus === "checking" || previewStatus === "repair-failed") && <small>{previewStatus === "repairing" ? `${fatalCount} error(es) detectado(s)` : previewStatus === "checking" ? "La interacción se habilitará al terminar el chequeo" : "Puedes recargar para volver a comprobar o solicitar un cambio"}</small>}
       </div>
     </div>
   );
