@@ -1,3 +1,5 @@
+import { appendFileSync, mkdirSync } from "node:fs";
+import path from "node:path";
 import { GoogleGenAI, ThinkingLevel, type Content } from "@google/genai";
 import type { ChatMessage, GenerateReply } from "./types.js";
 import { stripPreviewMonitor } from "./previewMonitor.js";
@@ -54,8 +56,28 @@ Si el mensaje del usuario contiene un bloque <ERRORS>...</ERRORS>, su contenido 
 
 Responde en el idioma del usuario. Si se proporciona un documento o escena actual, úsalo como única base vigente para las modificaciones. La reparación puede devolver un parche, una escena compacta corregida o HTML libre completo.`;
 
-export function createGeminiGenerator(apiKey: string, model: string): GenerateReply {
+export function createGeminiGenerator(apiKey: string, model: string, rawLogDir?: string): GenerateReply {
   const ai = new GoogleGenAI({ apiKey });
+
+  async function* recordRaw(stream: AsyncIterable<{ text?: string }>, label: string, file: string) {
+    let raw = "";
+    try {
+      for await (const chunk of stream) {
+        if (chunk.text) raw += chunk.text;
+        yield chunk;
+      }
+    } finally {
+      try {
+        mkdirSync(path.dirname(file), { recursive: true });
+        appendFileSync(file, `===== ${label} (${model}) =====
+${raw}
+
+`, "utf8");
+      } catch (error) {
+        console.error("No se pudo escribir el log crudo del LLM:", error);
+      }
+    }
+  }
 
   return async (messages: ChatMessage[], currentHtml?: string) => {
     const contents: Content[] = messages.map(({ role, content }) => ({
@@ -79,11 +101,14 @@ export function createGeminiGenerator(apiKey: string, model: string): GenerateRe
       temperature: 0.45,
       ThinkingLevel: 0,
     };
-    const responseStream = await ai.models.generateContentStream({
+    const rawFile = rawLogDir ? path.join(rawLogDir, `llm-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`) : undefined;
+    const track = <T extends { text?: string }>(stream: AsyncIterable<T>, label: string): AsyncIterable<T> =>
+      rawFile ? (recordRaw(stream, label, rawFile) as AsyncIterable<T>) : stream;
+    const responseStream = track(await ai.models.generateContentStream({
       model,
       contents,
       config,
-    });
+    }), "respuesta");
 
     return (async function* () {
       let mode: "unknown" | "scene" | "patch" | "other" = "unknown";
@@ -108,11 +133,11 @@ export function createGeminiGenerator(apiKey: string, model: string): GenerateRe
       } catch (error) {
         const reason = error instanceof Error ? error.message : "Escena inválida";
         const what = isPatch ? "El parche no se pudo aplicar" : "La escena compacta no se pudo construir";
-        const fallback = await ai.models.generateContentStream({
+        const fallback = track(await ai.models.generateContentStream({
           model,
           contents: [...contents, { role: "model", parts: [{ text: buffered }] }, { role: "user", parts: [{ text: `${what} (${reason}). Devuelve ahora una experiencia completa usando exclusivamente el FORMATO HTML LIBRE. Conserva todos los requisitos originales.` }] }],
           config,
-        });
+        }), "fallback");
         for await (const chunk of fallback) if (chunk.text) yield chunk.text;
       }
     })();

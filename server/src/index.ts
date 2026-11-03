@@ -10,6 +10,7 @@ dotenv.config({ path: path.resolve(serverDirectory, "../../.env") });
 const apiKey = process.env.GEMINI_API_KEY;
 const accessPassword = process.env.ACCESS_PASSWORD;
 const model = process.env.GEMINI_MODEL || "gemini-3.6-flash";
+const rawLogDir = process.env.LLM_RAW_DEBUG === "true" ? path.resolve(serverDirectory, "../../.experiments") : undefined;
 const port = Number(process.env.PORT) || 3000;
 
 if (!apiKey) {
@@ -24,7 +25,7 @@ if (!accessPassword) {
 
 const clientDist = path.resolve(serverDirectory, "../../client/dist");
 const app = createApp({
-  generateReply: createGeminiGenerator(apiKey, model),
+  generateReply: createGeminiGenerator(apiKey, model, rawLogDir),
   model,
   accessPassword,
   clientDist,
