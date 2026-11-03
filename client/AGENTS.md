@@ -26,6 +26,7 @@ src/
 ├── constants.ts             # SUGGESTIONS, MAX_CONTEXT_MESSAGES, MAX_REPAIR_ATTEMPTS, PREVIEW_STARTUP_TIMEOUT_MS
 ├── streamParser.ts          # WebXrStreamParser: extrae <webxr-html> y <assistant-response> del stream
 ├── previewDiagnostics.ts    # classifyPreviewDiagnostic + errorsPrompt (prompt de reparación)
+├── codeTrace.ts             # diffLines + diagnosticLines (resaltados del código fantasma)
 ├── collapsibleHeadings.ts   # Plugin rehype: agrupa contenido bajo cada heading para colapsarlo
 ├── index.css                # Estilos (clases como .chat-pane, .preview-panel, .build-overlay)
 ├── hooks/
@@ -46,8 +47,9 @@ src/
     │   └── Composer.tsx
     └── preview/
         ├── PreviewPanel.tsx
-        └── BuildOverlay.tsx
-test/                        # tsx --test: streamParser, previewDiagnostics, collapsibleHeadings
+        ├── BuildOverlay.tsx
+        └── GhostCode.tsx
+test/                        # tsx --test: streamParser, previewDiagnostics, collapsibleHeadings, codeTrace
 ```
 
 ## Responsabilidad de cada pieza
@@ -59,6 +61,7 @@ test/                        # tsx --test: streamParser, previewDiagnostics, col
 - **`streamParser.ts`**: lógica pura. Va acumulando texto del stream y expone HTML y respuesta parciales o completas. Tiene tests.
 - **`previewDiagnostics.ts`**: lógica pura. Clasifica los mensajes del iframe como `fatal`, `warning`, `ignored` o `ready`, genera firmas para deduplicar y construye el prompt de corrección. Tiene tests.
 - **`collapsibleHeadings.ts`**: plugin rehype usado por `Markdown` con `collapsible`. Tiene tests.
+- **`codeTrace.ts`**: lógica pura. `diffLines` calcula qué líneas salen y cuáles entran entre dos versiones (para animar parches) y `diagnosticLines` extrae las líneas que señalan los errores fatales. Tiene tests.
 
 ### Hooks
 
@@ -82,13 +85,27 @@ test/                        # tsx --test: streamParser, previewDiagnostics, col
 
 ### Preview (`components/preview/`)
 
-- **`PreviewPanel.tsx`**: barra de herramientas (recargar, descargar, pantalla completa, cerrar), iframe sandbox y botón "Volver al chat". Recibe la etiqueta de estado ya calculada.
-- **`BuildOverlay.tsx`**: capa sobre el iframe mientras se genera, comprueba o repara. **Es dueño del scroll del código fantasma** (`ghostCodeRef` + efecto).
+- **`PreviewPanel.tsx`**: barra de herramientas (recargar, descargar, pantalla completa, cerrar), iframe sandbox y botón "Volver al chat". Recibe la etiqueta de estado ya calculada. Si la experiencia queda lista mientras se anima un parche, mantiene el overlay hasta que la animación termine.
+- **`BuildOverlay.tsx`**: capa sobre el iframe mientras se genera, modifica, comprueba o repara. Elige texto y tono según `PreviewStatus`:
+  - azul: generando o revisando;
+  - violeta (`tone-patch`): "Modificando Experiencia";
+  - amarillo (`tone-repair`): "Perfeccionando Experiencia".
+
+  Los tonos son variables CSS (`--tone`, `--tone-soft`, `--tone-deep`).
+- **`GhostCode.tsx`**: código fantasma del fondo. **Es dueño de su scroll y de sus timers**. Modos:
+  - `stream`: sigue el final del código.
+  - `scan`: un resaltado verde avanza una línea cada `GHOST_SCAN_STEP_MS`. Es solo estético y no refleja la detección real de errores.
+  - `error`: las líneas que señalan los diagnósticos van en rojo; si no traen número, se marca la última línea escaneada.
+  - `plain`: código quieto.
+
+  Cuando recibe un `GhostDiff` nuevo, marca en rojo las líneas que salen, cambia al texto nuevo y marca en verde las que entran.
 
 ## Flujo de datos
 
 1. `Composer` / `WelcomeScreen` → `onSend(texto)` → `App.sendMessage` hace `POST /api/chat` con los últimos `MAX_CONTEXT_MESSAGES` mensajes y `currentHtml` si existe.
-2. La respuesta es **NDJSON**, un evento por línea: `delta` (texto parcial), `final` (texto completo), `done`, `error`. `processStream` los lee y usa `WebXrStreamParser` para separar `<webxr-html>` y `<assistant-response>`.
+2. La respuesta es **NDJSON**, un evento por línea: `delta` (texto parcial), `status`, `final` (texto completo), `done`, `error`.
+   - `status` trae `patching` cuando el modelo responde con un parche, o `patch-fallback` cuando el parche falló y va a llegar un documento completo.
+   - Con `patching`, el estado del preview pasa a `patching` (en una reparación se queda en `repairing`) y el HTML parcheado no se muestra como código fantasma en streaming. Cuando se confirma, se guarda un `GhostDiff` (antes/después) para animar el cambio. `processStream` los lee y usa `WebXrStreamParser` para separar `<webxr-html>` y `<assistant-response>`.
 3. Con el HTML completo, `commitCompletedHtml` lo carga en el iframe (`iframeKey` + nuevo `previewRunId`) y arranca un timeout de arranque de `PREVIEW_STARTUP_TIMEOUT_MS`.
 4. El iframe envía `postMessage` con `namespace: "profeia-preview"` y el `runId` actual. `App` los acepta solo si vienen de `iframeRef.contentWindow` y coinciden con `previewRunId`.
 5. `classifyPreviewDiagnostic` decide:
@@ -119,5 +136,5 @@ Es una decisión consciente. `processStream`, `sendMessage` y el manejo de diagn
 | Un nuevo estado visual del chat | Componente en `components/chat/`, con datos por props desde `App` |
 | Algo del panel de preview | `components/preview/` |
 | Un nuevo tipo de diagnóstico | `previewDiagnostics.ts` (+ test) y `PreviewDiagnosticType` |
-| Un nuevo escenario de auditoría | `dev/devScenarios.ts` |
+| Un nuevo escenario de auditoría | `dev/devScenarios.ts` (`previousHtml` anima un diff, `diagnostic` simula un error del iframe) |
 | Lógica pura (parseo, clasificación) | Archivo en `src/` con test en `test/` |

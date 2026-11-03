@@ -1,5 +1,5 @@
-import type { RefObject } from "react";
-import type { PreviewMode, PreviewStatus } from "../../types";
+import { useState, type RefObject } from "react";
+import type { GhostDiff, PreviewMode, PreviewStatus } from "../../types";
 import { Icon } from "../Icon";
 import { BuildOverlay } from "./BuildOverlay";
 
@@ -8,11 +8,13 @@ export function PreviewPanel({
   previewStatus,
   statusLabel,
   isBuilding,
-  streamingHtml,
+  isStreamingCode,
+  ghostCode,
+  ghostDiff,
+  errorLines,
   html,
   iframeKey,
   iframeRef,
-  fatalCount,
   canDownload,
   onLoad,
   onReload,
@@ -23,17 +25,23 @@ export function PreviewPanel({
   previewStatus: PreviewStatus;
   statusLabel: string;
   isBuilding: boolean;
-  streamingHtml: string | null;
+  isStreamingCode: boolean;
+  ghostCode: string;
+  ghostDiff: GhostDiff | null;
+  errorLines: number[];
   html: string;
   iframeKey: number;
   iframeRef: RefObject<HTMLIFrameElement | null>;
-  fatalCount: number;
   canDownload: boolean;
   onLoad: () => void;
   onReload: () => void;
   onDownload: () => void;
   onModeChange: (mode: PreviewMode) => void;
 }) {
+  // Si la experiencia queda lista en medio de la animación de un parche, el overlay espera a que termine.
+  const [isSequenceActive, setIsSequenceActive] = useState(false);
+  const showOverlay = isBuilding || isSequenceActive;
+
   return (
     <aside className={`preview-panel ${previewMode === "fullscreen" ? "fullscreen" : ""}`} aria-label="Vista previa WebXR">
       <div className="preview-toolbar">
@@ -45,13 +53,13 @@ export function PreviewPanel({
           <button onClick={() => onModeChange("closed")} className="close-preview" aria-label="Cerrar preview">✕</button>
         </div>
       </div>
-      <div className={`preview-stage ${isBuilding ? "is-building" : ""}`}>
+      <div className={`preview-stage ${showOverlay ? "is-building" : ""}`}>
         {html ? (
           <iframe ref={iframeRef} key={iframeKey} title="Experiencia WebXR generada" srcDoc={html} onLoad={onLoad} sandbox="allow-scripts allow-forms allow-pointer-lock allow-downloads" allow="xr-spatial-tracking; fullscreen; accelerometer; gyroscope" />
         ) : (
           <div className="preview-placeholder" aria-hidden="true"><img src="/university-logo.png" alt="Logo de la universidad" /></div>
         )}
-        {isBuilding && <BuildOverlay previewStatus={previewStatus} streamingHtml={streamingHtml} fatalCount={fatalCount} />}
+        {showOverlay && <BuildOverlay previewStatus={previewStatus} isStreamingCode={isStreamingCode} ghostCode={ghostCode} ghostDiff={ghostDiff} errorLines={errorLines} onSequenceChange={setIsSequenceActive} />}
       </div>
       {previewMode === "fullscreen" && <button className="floating-back" onClick={() => onModeChange("split")}><Icon name="back" /> Volver al chat</button>}
     </aside>

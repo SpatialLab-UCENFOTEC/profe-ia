@@ -121,7 +121,7 @@ ${raw}
         if (mode === "unknown") {
           const head = buffered.trimStart();
           if (head.startsWith("<webxr-scene>")) mode = "scene";
-          else if (head.startsWith("<webxr-patch>")) mode = "patch";
+          else if (head.startsWith("<webxr-patch>")) { mode = "patch"; yield { phase: "patching" as const }; }
           else if (buffered.includes(">") || buffered.length > 100) mode = "other";
         }
         if (mode === "other") { yield buffered; buffered = ""; }
@@ -133,6 +133,7 @@ ${raw}
       } catch (error) {
         const reason = error instanceof Error ? error.message : "Escena inválida";
         const what = isPatch ? "El parche no se pudo aplicar" : "La escena compacta no se pudo construir";
+        if (isPatch) yield { phase: "patch-fallback" as const };
         const fallback = track(await ai.models.generateContentStream({
           model,
           contents: [...contents, { role: "model", parts: [{ text: buffered }] }, { role: "user", parts: [{ text: `${what} (${reason}). Devuelve ahora una experiencia completa usando exclusivamente el FORMATO HTML LIBRE. Conserva todos los requisitos originales.` }] }],

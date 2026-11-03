@@ -3,7 +3,8 @@ import { WebXrStreamParser, isCompleteHtmlDocument } from "./streamParser";
 import { classifyPreviewDiagnostic, errorsPrompt, type ClassifiedDiagnostic, type PreviewDiagnostic } from "./previewDiagnostics";
 import { MAX_CONTEXT_MESSAGES, MAX_REPAIR_ATTEMPTS, PREVIEW_STARTUP_TIMEOUT_MS } from "./constants";
 import type { DevScenario } from "./dev/devScenarios";
-import type { Message, PreviewMode, PreviewStatus, StreamEvent } from "./types";
+import { diagnosticLines } from "./codeTrace";
+import type { GhostDiff, Message, PreviewMode, PreviewStatus, StreamEvent } from "./types";
 import { useAuth } from "./hooks/useAuth";
 import { AccessScreen } from "./components/AccessScreen";
 import { DevAuditPanel } from "./components/DevAuditPanel";
@@ -27,6 +28,7 @@ export default function App() {
   const [previewRunId, setPreviewRunId] = useState(crypto.randomUUID());
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus>("idle");
   const [previewDiagnostics, setPreviewDiagnostics] = useState<ClassifiedDiagnostic[]>([]);
+  const [ghostDiff, setGhostDiff] = useState<GhostDiff | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const awaitingFinalLoadRef = useRef(false);
@@ -58,10 +60,14 @@ export default function App() {
     let finalizedResult: ReturnType<WebXrStreamParser["finish"]> | undefined;
     let finalMessageStored = false;
     let storedMessageId: string | undefined;
+    let patching = false;
 
     const commitCompletedHtml = (html: string) => {
       if (committedHtml || !isCompleteHtmlDocument(html)) return;
       committedHtml = html.trim();
+      const nextRunId = crypto.randomUUID();
+      setGhostDiff(patching ? { id: nextRunId, before: currentCandidateRef.current || lastCompletedHtml, after: committedHtml } : null);
+      setStreamingHtml(null);
       currentCandidateRef.current = committedHtml;
       diagnosticSignaturesRef.current.clear();
       fatalDiagnosticsRef.current = [];
@@ -71,7 +77,6 @@ export default function App() {
         repairAttemptRef.current = 0;
         correctionResponsesRef.current = [];
       }
-      const nextRunId = crypto.randomUUID();
       setPreviewRunId(nextRunId);
       awaitingFinalLoadRef.current = true;
       setCurrentHtml(committedHtml);
@@ -84,12 +89,13 @@ export default function App() {
 
     const updateParsedContent = (text: string) => {
       const parsed = parser.push(text);
-      if (parsed.hasHtml) {
+      // Un parche llega ya aplicado como documento completo: no se transmite como código nuevo.
+      if (parsed.hasHtml && !patching) {
         if (!committedHtml) setStreamingHtml(parsed.html);
         setPreviewMode((mode) => mode === "closed" ? "split" : mode);
         if (!buildingStarted) {
           buildingStarted = true;
-          setPreviewStatus("generating");
+          if (!isRepair) setPreviewStatus("generating");
           setIsPreviewBuilding(true);
         }
       }
@@ -99,6 +105,14 @@ export default function App() {
     const handleLine = (line: string) => {
       if (!line.trim()) return;
       const event = JSON.parse(line) as StreamEvent;
+      if (event.type === "status") {
+        patching = event.phase === "patching";
+        if (patching) {
+          setPreviewMode((mode) => mode === "closed" ? "split" : mode);
+          if (!isRepair) setPreviewStatus("patching");
+          setIsPreviewBuilding(true);
+        }
+      }
       if (event.type === "delta") updateParsedContent(event.text);
       if (event.type === "final") {
         const finalParser = new WebXrStreamParser();
@@ -159,6 +173,7 @@ export default function App() {
       if (!committedHtml) {
         awaitingFinalLoadRef.current = false;
         setIsPreviewBuilding(false);
+        setPreviewStatus(status => status === "patching" || status === "generating" ? (lastCompletedHtml ? "ready" : "idle") : status);
       }
       setCurrentHtml(committedHtml || lastCompletedHtml);
       setStreamingHtml(null);
@@ -190,6 +205,7 @@ export default function App() {
     setError(null);
     setStreamingHtml(null);
     setStreamingSummary("");
+    setGhostDiff(null);
     setIsLoading(true);
     isLoadingRef.current = true;
 
@@ -251,6 +267,7 @@ export default function App() {
 
     if (classified.severity !== "fatal") return;
     fatalDiagnosticsRef.current.push(classified);
+    setGhostDiff(null);
     if (previewTimeoutRef.current) clearTimeout(previewTimeoutRef.current);
     if (repairAttemptRef.current >= MAX_REPAIR_ATTEMPTS) {
       setPreviewStatus("repair-failed");
@@ -318,16 +335,13 @@ export default function App() {
     setLastCompletedHtml(scenario.status === "ready" ? completedHtml : "");
     currentCandidateRef.current = completedHtml;
     setPreviewStatus(scenario.status);
-    setIsPreviewBuilding(["generating", "repairing", "repair-failed"].includes(scenario.status));
+    setIsPreviewBuilding(["generating", "patching", "checking", "repairing", "repair-failed"].includes(scenario.status));
     setPreviewMode(scenario.html ? "split" : "closed");
     setPreviewRunId(crypto.randomUUID());
     setIframeKey(key => key + 1);
+    setGhostDiff(scenario.previousHtml ? { id: crypto.randomUUID(), before: scenario.previousHtml, after: completedHtml } : null);
 
-    const diagnostic = scenario.id === "missing-response"
-      ? classifyPreviewDiagnostic({ type: "missing-response", details: {} })
-      : scenario.id === "repair-failed"
-        ? classifyPreviewDiagnostic({ type: "runtime-error", details: { message: "ReferenceError: XRController is not defined", filename: "experience.html", line: 42 } })
-        : undefined;
+    const diagnostic = scenario.diagnostic ? classifyPreviewDiagnostic(scenario.diagnostic) : undefined;
     setPreviewDiagnostics(diagnostic ? [diagnostic] : []);
     if (diagnostic) fatalDiagnosticsRef.current = [diagnostic];
   };
@@ -351,6 +365,7 @@ export default function App() {
     diagnosticSignaturesRef.current.clear();
     fatalDiagnosticsRef.current = [];
     setPreviewDiagnostics([]);
+    setGhostDiff(null);
     setPreviewStatus("checking");
     setIsPreviewBuilding(true);
     const nextRunId = crypto.randomUUID();
@@ -370,6 +385,8 @@ export default function App() {
     ? `Corrigiendo errores (${Math.min(repairAttemptRef.current + 1, MAX_REPAIR_ATTEMPTS)}/${MAX_REPAIR_ATTEMPTS})`
     : previewStatus === "generating"
       ? "Generando código"
+      : previewStatus === "patching"
+        ? "Modificando experiencia"
       : previewStatus === "checking"
         ? "Comprobando experiencia"
       : previewStatus === "repair-failed"
@@ -408,11 +425,13 @@ export default function App() {
         previewStatus={previewStatus}
         statusLabel={previewStatusLabel}
         isBuilding={isPreviewBuilding}
-        streamingHtml={streamingHtml}
+        isStreamingCode={streamingHtml !== null}
+        ghostCode={streamingHtml ?? currentHtml}
+        ghostDiff={ghostDiff}
+        errorLines={diagnosticLines(previewDiagnostics)}
         html={instrumentedPreviewHtml}
         iframeKey={iframeKey}
         iframeRef={iframeRef}
-        fatalCount={previewDiagnostics.filter(item => item.severity === "fatal").length}
         canDownload={Boolean(lastCompletedHtml)}
         onLoad={handlePreviewLoaded}
         onReload={reloadPreview}

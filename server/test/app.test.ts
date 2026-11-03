@@ -77,6 +77,22 @@ describe("API del asistente WebXR", () => {
     assert.deepEqual(events[3], { type: "done" });
   });
 
+  it("avisa que se está aplicando un parche sin incluirlo en la respuesta final", async () => {
+    async function* patchedStream() {
+      yield { phase: "patching" as const };
+      yield "<assistant-response>Cambié el cielo</assistant-response>";
+    }
+    const app = testApp(async () => patchedStream());
+    const agent = await authenticatedAgent(app);
+    const response = await agent.post("/api/chat").send({ messages: [{ role: "user", content: "Cambia el cielo" }] }).expect(200);
+    const events = eventsFrom(response.text);
+
+    assert.deepEqual(events[0], { type: "status", phase: "patching" });
+    assert.deepEqual(events[1], { type: "delta", text: "<assistant-response>Cambié el cielo</assistant-response>" });
+    assert.equal(events[2]?.type, "final");
+    assert.doesNotMatch(String(events[2]?.text), /patching/);
+  });
+
   it("rechaza historiales y HTML actual inválidos", async () => {
     const app = testApp();
     const agent = await authenticatedAgent(app);

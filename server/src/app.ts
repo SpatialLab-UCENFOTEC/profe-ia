@@ -1,7 +1,7 @@
 import express, { type ErrorRequestHandler } from "express";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import path from "node:path";
-import type { ChatMessage, GenerateReply } from "./types.js";
+import type { ChatMessage, GenerateReply, ReplyChunk } from "./types.js";
 import { instrumentGeneratedResponse } from "./previewMonitor.js";
 
 const MAX_MESSAGES = 30;
@@ -68,7 +68,7 @@ function parseCurrentHtml(value: unknown): string | undefined | null {
   return value;
 }
 
-function streamEvent(type: "delta" | "final" | "done" | "error", payload: Record<string, unknown> = {}) {
+function streamEvent(type: "delta" | "status" | "final" | "done" | "error", payload: Record<string, unknown> = {}) {
   return `${JSON.stringify({ type, ...payload })}\n`;
 }
 
@@ -177,7 +177,7 @@ export function createApp({ generateReply, model, accessPassword, clientDist }: 
       const stream = await generateReply(messages, currentHtml);
       const iterator = stream[Symbol.asyncIterator]();
       const first = await iterator.next();
-      if (first.done || !first.value) {
+      if (first.done || first.value === "") {
         throw new Error("Gemini devolvió una respuesta vacía.");
       }
 
@@ -187,14 +187,21 @@ export function createApp({ generateReply, model, accessPassword, clientDist }: 
       response.setHeader("X-Content-Type-Options", "nosniff");
       response.flushHeaders();
 
-      let completedResponse = first.value;
-      response.write(streamEvent("delta", { text: first.value }));
+      let completedResponse = "";
+      const writeChunk = (chunk: ReplyChunk) => {
+        if (typeof chunk !== "string") {
+          response.write(streamEvent("status", { phase: chunk.phase }));
+          return;
+        }
+        completedResponse += chunk;
+        response.write(streamEvent("delta", { text: chunk }));
+      };
+      writeChunk(first.value);
       try {
         while (true) {
           const result = await iterator.next();
           if (result.done) break;
-          completedResponse += result.value;
-          response.write(streamEvent("delta", { text: result.value }));
+          writeChunk(result.value);
         }
 
         if (!hasValidAssistantResponse(completedResponse)) {
@@ -208,7 +215,7 @@ export function createApp({ generateReply, model, accessPassword, clientDist }: 
           ];
           const summaryStream = await generateReply(summaryMessages, currentHtml);
           let summaryText = "";
-          for await (const chunk of summaryStream) summaryText += chunk;
+          for await (const chunk of summaryStream) if (typeof chunk === "string") summaryText += chunk;
           const summaryBlock = extractAssistantResponse(summaryText);
           if (hasValidAssistantResponse(summaryBlock)) {
             completedResponse += `\n${summaryBlock}`;
