@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import request from "supertest";
-import { createApp } from "../src/app.js";
+import { createApp, parseApiTokens } from "../src/app.js";
 
 const ACCESS_PASSWORD = "contraseña-de-prueba";
+const API_TOKEN = "token-de-prueba-con-mas-de-32-caracteres";
+const PROVIDERS = [
+  { id: "falso", label: "Falso", model: "modelo-prueba" },
+  { id: "otro", label: "Otro", model: "modelo-2" },
+];
 
 async function* chunks(...values: string[]) {
   for (const value of values) yield value;
@@ -14,7 +19,13 @@ function eventsFrom(responseText: string) {
 }
 
 function testApp(generateReply: Parameters<typeof createApp>[0]["generateReply"] = async () => chunks("ok")) {
-  return createApp({ generateReply, model: "modelo-prueba", accessPassword: ACCESS_PASSWORD });
+  return createApp({
+    generateReply,
+    providers: PROVIDERS,
+    defaultProvider: "falso",
+    accessPassword: ACCESS_PASSWORD,
+    apiTokens: parseApiTokens(`pruebas:${API_TOKEN}`),
+  });
 }
 
 async function authenticatedAgent(app: ReturnType<typeof createApp>) {
@@ -27,7 +38,7 @@ describe("API del asistente WebXR", () => {
   it("reporta su estado", async () => {
     const app = testApp();
     const response = await request(app).get("/api/health").expect(200);
-    assert.deepEqual(response.body, { ok: true, model: "modelo-prueba" });
+    assert.deepEqual(response.body, { ok: true, defaultProvider: "falso", providers: ["falso", "otro"] });
   });
 
   it("bloquea el chat hasta ingresar la contraseña correcta", async () => {
@@ -56,7 +67,7 @@ describe("API del asistente WebXR", () => {
     assert.deepEqual(eventsFrom(response.text), [
       { type: "delta", text: "Recibí: Hola" },
       { type: "delta", text: " con 13 caracteres" },
-      { type: "final", text: "Recibí: Hola con 13 caracteres" },
+      { type: "final", text: "Recibí: Hola con 13 caracteres", provider: "falso" },
       { type: "done" },
     ]);
   });
@@ -126,5 +137,111 @@ describe("API del asistente WebXR", () => {
     const app = testApp(async () => chunks());
     const agent = await authenticatedAgent(app);
     await agent.post("/api/chat").send({ messages: [{ role: "user", content: "Hola" }] }).expect(502);
+  });
+});
+
+describe("Acceso por token de API", () => {
+  const body = { messages: [{ role: "user", content: "Hola" }] };
+
+  it("acepta un token Bearer válido sin sesión", async () => {
+    const app = testApp(async () => chunks("<assistant-response>Hola</assistant-response>"));
+    const response = await request(app).post("/api/chat").set("Authorization", `Bearer ${API_TOKEN}`).send(body).expect(200);
+    assert.equal(eventsFrom(response.text).at(-1)?.type, "done");
+  });
+
+  it("rechaza tokens inválidos o ausentes", async () => {
+    const app = testApp();
+    const invalid = await request(app).post("/api/chat").set("Authorization", "Bearer otro-token").send(body).expect(401);
+    assert.match(String(invalid.headers["www-authenticate"]), /invalid_token/);
+    await request(app).post("/api/chat").send(body).expect(401);
+  });
+
+  it("limita los intentos con tokens inválidos", async () => {
+    const app = testApp();
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await request(app).post("/api/chat").set("Authorization", "Bearer malo").send(body).expect(401);
+    }
+    await request(app).post("/api/chat").set("Authorization", `Bearer ${API_TOKEN}`).send(body).expect(429);
+  });
+
+  it("devuelve JSON completo con stream=false", async () => {
+    const document = "<!doctype html><html><head></head><body>XR</body></html>";
+    const app = testApp(async () => chunks(`<webxr-html>${document}</webxr-html>`, "<assistant-response>Listo</assistant-response>"));
+    const response = await request(app)
+      .post("/api/chat?stream=false")
+      .set("Authorization", `Bearer ${API_TOKEN}`)
+      .send(body)
+      .expect(200)
+      .expect("Content-Type", /application\/json/);
+    assert.equal(response.body.response, "Listo");
+    assert.match(response.body.html, /^<!doctype html>/);
+    assert.match(response.body.html, /profeia-preview-monitor/);
+    assert.match(response.body.raw, /<assistant-response>Listo<\/assistant-response>/);
+  });
+
+  it("acepta \"model\" como alias de \"assistant\"", async () => {
+    let received: string[] = [];
+    const app = testApp(async (messages) => {
+      received = messages.map((message) => message.role);
+      return chunks("ok");
+    });
+    await request(app)
+      .post("/api/chat")
+      .set("Authorization", `Bearer ${API_TOKEN}`)
+      .send({ messages: [{ role: "user", content: "a" }, { role: "model", content: "b" }, { role: "user", content: "c" }] })
+      .expect(200);
+    assert.deepEqual(received.slice(0, 3), ["user", "assistant", "user"]);
+  });
+
+  it("valida el formato de API_TOKENS", () => {
+    assert.deepEqual(parseApiTokens(undefined), []);
+    assert.throws(() => parseApiTokens("sin-separador"), /nombre:token/);
+    assert.throws(() => parseApiTokens("corto:abc"), /32 caracteres/);
+    assert.throws(() => parseApiTokens(`a:${API_TOKEN},a:${API_TOKEN}x`), /repetido/);
+  });
+
+  it("solo envía CORS a los orígenes configurados", async () => {
+    const app = createApp({
+      generateReply: async () => chunks("ok"),
+      providers: PROVIDERS,
+      defaultProvider: "falso",
+      accessPassword: ACCESS_PASSWORD,
+      corsOrigins: ["https://permitido.example"],
+    });
+    const allowed = await request(app).options("/api/chat").set("Origin", "https://permitido.example").expect(204);
+    assert.equal(allowed.headers["access-control-allow-origin"], "https://permitido.example");
+    const other = await request(app).options("/api/chat").set("Origin", "https://otro.example").expect(204);
+    assert.equal(other.headers["access-control-allow-origin"], undefined);
+  });
+});
+
+describe("Varios proveedores de LLM", () => {
+  const body = { messages: [{ role: "user", content: "Hola" }] };
+
+  it("usa el predeterminado o el proveedor pedido y lo informa", async () => {
+    const used: (string | undefined)[] = [];
+    const app = testApp(async (_messages, _html, options) => {
+      used.push(options?.provider);
+      return chunks("<assistant-response>ok</assistant-response>");
+    });
+    const auth = { Authorization: `Bearer ${API_TOKEN}` };
+    const byDefault = await request(app).post("/api/chat?stream=false").set(auth).send(body).expect(200);
+    const chosen = await request(app).post("/api/chat?stream=false").set(auth).send({ ...body, provider: "otro" }).expect(200);
+    assert.deepEqual(used, ["falso", "otro"]);
+    assert.equal(byDefault.body.provider, "falso");
+    assert.equal(chosen.body.provider, "otro");
+  });
+
+  it("rechaza proveedores desconocidos", async () => {
+    const app = testApp();
+    const response = await request(app).post("/api/chat").set("Authorization", `Bearer ${API_TOKEN}`).send({ ...body, provider: "inexistente" }).expect(400);
+    assert.match(response.body.error, /falso, otro/);
+  });
+
+  it("lista los proveedores solo a clientes autenticados", async () => {
+    const app = testApp();
+    await request(app).get("/api/providers").expect(401);
+    const response = await request(app).get("/api/providers").set("Authorization", `Bearer ${API_TOKEN}`).expect(200);
+    assert.deepEqual(response.body, { default: "falso", providers: PROVIDERS });
   });
 });

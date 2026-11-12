@@ -76,7 +76,7 @@ export class WebXrStreamParser {
       }
       const completedHtml = html.content.trim();
       if (!isCompleteHtmlDocument(completedHtml)) {
-        throw new Error("Gemini no devolvió un documento HTML completo y válido.");
+        throw new Error("El modelo no devolvió un documento HTML completo y válido.");
       }
       return { html: completedHtml, response: response.content.trim() };
     }

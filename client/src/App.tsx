@@ -6,6 +6,7 @@ import type { DevScenario } from "./dev/devScenarios";
 import { diagnosticLines } from "./codeTrace";
 import type { GhostDiff, Message, PreviewMode, PreviewStatus, StreamEvent } from "./types";
 import { useAuth } from "./hooks/useAuth";
+import { useProviders } from "./hooks/useProviders";
 import { AccessScreen } from "./components/AccessScreen";
 import { DevAuditPanel } from "./components/DevAuditPanel";
 import { ChatPane } from "./components/chat/ChatPane";
@@ -13,6 +14,7 @@ import { PreviewPanel } from "./components/preview/PreviewPanel";
 
 export default function App() {
   const { authState, password, setPassword, authError, isAuthenticating, login, lock } = useAuth();
+  const { providers, selected: selectedProvider, select: selectProvider } = useProviders(authState === "authenticated");
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -133,7 +135,7 @@ export default function App() {
         }
         const modelMessage: Message = {
           id: crypto.randomUUID(),
-          role: "model",
+          role: "assistant",
           content: finalizedResult.response,
           html: finalizedResult.html,
           internal: Boolean(finalizedResult.html),
@@ -167,7 +169,7 @@ export default function App() {
       const result = finalizedResult;
       setStreamingSummary("");
       if (!finalMessageStored && result.response) {
-        setMessages([...nextMessages, { id: crypto.randomUUID(), role: "model", content: result.response, html: result.html }]);
+        setMessages([...nextMessages, { id: crypto.randomUUID(), role: "assistant", content: result.response, html: result.html }]);
       }
     } catch (streamError) {
       if (!committedHtml) {
@@ -216,6 +218,7 @@ export default function App() {
         body: JSON.stringify({
           messages: nextMessages.slice(-MAX_CONTEXT_MESSAGES).map(({ role, content: messageContent }) => ({ role, content: messageContent })),
           currentHtml: options.currentHtml || lastCompletedHtml || undefined,
+          provider: selectedProvider,
         }),
       });
       if (!response.ok) {
@@ -319,7 +322,7 @@ export default function App() {
     if (scenario.response) {
       scenarioMessages.push({
         id: crypto.randomUUID(),
-        role: "model",
+        role: "assistant",
         content: scenario.response,
         html: scenario.status === "generating" ? undefined : scenario.html,
         corrections: scenario.corrections,
@@ -419,6 +422,7 @@ export default function App() {
         onInputChange={setInput}
         onSend={(content) => void sendMessage(content)}
         onDismissError={() => setError(null)}
+        providerPicker={{ providers, selected: selectedProvider, disabled: isLoading, onSelect: selectProvider }}
       />
       {isPreviewVisible && <PreviewPanel
         previewMode={previewMode}

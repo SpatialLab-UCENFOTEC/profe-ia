@@ -1,14 +1,14 @@
 # Arquitectura LLM → XR (profe-ia)
 
-4 de noviembre de 2026
+4 de noviembre de 2026 · actualizado el 11 de noviembre de 2026
 
 ## Visión general
 
-Orbit XR (repositorio `profe-ia`) convierte una conversación en una experiencia WebXR ejecutable. El usuario escribe en un chat React; el servidor Express reenvía el historial a Gemini; el modelo responde con **texto etiquetado** (no con JSON de una API) que el servidor y el cliente interpretan; el resultado es un documento HTML completo que corre en un iframe aislado, desde donde se puede entrar a XR.
+Orbit XR (repositorio `profe-ia`) convierte una conversación en una experiencia WebXR ejecutable. El usuario escribe en un chat React; el servidor Express reenvía el historial al modelo de lenguaje configurado; el modelo responde con **texto etiquetado** (no con JSON de una API) que el servidor y el cliente interpretan; el resultado es un documento HTML completo que corre en un iframe aislado, desde donde se puede entrar a XR.
 
 Tres ideas sostienen el diseño:
 
-- **Contrato por etiquetas.** El LLM habla un protocolo de texto con cuatro etiquetas: `<webxr-scene>`, `<webxr-html>`, `<webxr-patch>` y `<assistant-response>`. Quién lo define: el `SYSTEM_INSTRUCTION` de `server/src/gemini.ts`.
+- **Contrato por etiquetas.** El LLM habla un protocolo de texto con cuatro etiquetas: `<webxr-scene>`, `<webxr-html>`, `<webxr-patch>` y `<assistant-response>`. Quién lo define: el `SYSTEM_INSTRUCTION` de `server/src/prompt.ts`.
 - **Un solo formato final.** Escenas compactas y parches se compilan en el servidor a un bloque `<webxr-html>` con HTML completo, de modo que el cliente solo conoce ese formato.
 - **Bucle de autocorrección.** Un monitor inyectado en el iframe reporta errores reales de ejecución y el cliente los devuelve al modelo hasta 2 veces.
 
@@ -20,47 +20,72 @@ El recuadro resaltado en la fila superior es el único punto que depende del pro
 
 ### El punto de enlace
 
-El servidor no depende de Gemini en ningún archivo salvo uno. `server/src/types.ts` define el contrato que el resto del backend consume:
+El servidor puede tener varios modelos conectados a la vez y habla con todos a través de una sola interfaz, `LlmProvider` (`server/src/llm/types.ts`):
+
+```ts
+interface LlmProvider {
+  id: string;     // "claude-cli", "gemini"...
+  label: string;  // nombre para la interfaz
+  model: string;  // "haiku"
+  streamText(request: { system: string; messages: ChatMessage[]; signal?: AbortSignal }): AsyncIterable<string>;
+}
+```
+
+Un adaptador solo convierte mensajes (`role: "user" | "assistant"`) en texto en streaming. Todo lo demás es independiente del proveedor y se reparte así:
+
+| Pieza | Archivo |
+| --- | --- |
+| Instrucción de sistema y anexado del documento vigente (`withCurrentExperience`) | `server/src/prompt.ts` |
+| Detección de modo, compilación de escenas, aplicación de parches, respaldo a HTML libre y registro crudo (`createGenerator`) | `server/src/orchestrator.ts` |
+| Lista de adaptadores (`PROVIDER_DEFINITIONS`) y activación por variables de entorno (`createProviderRegistry`) | `server/src/llm/index.ts` |
+| Adaptadores concretos | `server/src/llm/claudeCli.ts`, `server/src/llm/gemini.ts` |
+
+Solo la carpeta `server/src/llm/` conoce proveedores concretos; ningún otro archivo del servidor ni del cliente los nombra.
+
+`server/src/index.ts` crea el registro con `createProviderRegistry(process.env)`, construye `createGenerator(registry.get, { rawLogDir })` y entrega a `createApp` el generador, la lista pública de proveedores y el predeterminado. Cada petición puede pedir un proveedor con el campo `provider`. `app.ts` solo conoce el contrato `GenerateReply` de `server/src/types.ts`:
 
 ```ts
 export type GenerateReply = (
-  messages: ChatMessage[],          // { role: "user" | "model", content }
+  messages: ChatMessage[],          // { role: "user" | "assistant", content }
   currentHtml?: string,             // última versión terminada
+  options?: { provider?: string },  // id del proveedor; si falta, el predeterminado
 ) => Promise<AsyncIterable<ReplyChunk>>;   // string | { phase: "patching" | "patch-fallback" }
 ```
-
-`server/src/index.ts` lee la configuración, construye el generador con `createGeminiGenerator(apiKey, model, rawLogDir)` y se lo entrega a `createApp({ generateReply, ... })` en `server/src/app.ts`. Ese es el único punto de acoplamiento real.
 
 ### Configuración
 
 | Variable | Uso |
 | --- | --- |
-| `GEMINI_API_KEY` | Clave de Google AI Studio. Solo la usa el servidor; el cliente nunca la ve. Obligatoria. |
-| `GEMINI_MODEL` | Modelo a usar. Por defecto `gemini-3.6-flash`. |
-| `ACCESS_PASSWORD` | Contraseña de acceso a la app (cookie `HttpOnly`, sesión de 12 h). Obligatoria. |
+| `LLM_PROVIDERS` | Adaptadores activos, separados por comas. Por defecto el primero registrado (`claude-cli`). |
+| `LLM_DEFAULT_PROVIDER` | Adaptador usado si la petición no indica `provider`. Por defecto el primero de la lista. |
+| Variables de cada adaptador | `CLAUDE_CLI_MODEL`, `CLAUDE_CLI_PATH`, `CLAUDE_CLI_MAX_OUTPUT_TOKENS`; `GEMINI_API_KEY`, `GEMINI_MODEL`. Ver [api.md](api.md#modelos-de-lenguaje). |
+| `ACCESS_PASSWORD` | Contraseña de acceso a la app web (cookie `HttpOnly`, sesión de 12 h). Obligatoria. |
+| `API_TOKENS` | Tokens Bearer para clientes externos, `nombre:token,...`. Opcional. Ver [api.md](api.md). |
+| `CORS_ORIGINS` | Orígenes de navegador autorizados a llamar a la API. Opcional. |
 | `PORT` | Puerto del servidor (3000 por defecto). |
 | `LLM_RAW_DEBUG` | Con `true`, guarda la respuesta cruda del modelo en `.experiments/`. |
 
 ### Qué se envía al modelo
 
-- **Historial.** `app.ts` valida el cuerpo (de 1 a 30 mensajes, máximo 8 000 caracteres cada uno, el último debe ser del usuario) y `gemini.ts` lo transforma en `Content[]` con `role` y `parts: [{ text }]`. El cliente solo conserva los resúmenes de las respuestas del modelo, no su HTML.
-- **Documento vigente.** Si existe, se anexa al último mensaje del usuario. Si el HTML contiene el bloque `profeia-scene-spec`, se envía como `<current-webxr-scene>` (JSON compacto); si no, como `<current-webxr-html>` con el monitor de errores ya retirado (`stripPreviewMonitor`). Límite: 250 000 caracteres.
+- **Historial.** `app.ts` valida el cuerpo (de 1 a 30 mensajes, máximo 8 000 caracteres cada uno, el último debe ser del usuario; `"model"` se acepta como alias de `"assistant"`) y lo pasa tal cual al orquestador. El cliente solo conserva los resúmenes de las respuestas del modelo, no su HTML.
+- **Documento vigente.** Si existe, `withCurrentExperience` lo anexa al último mensaje del usuario. Si el HTML contiene el bloque `profeia-scene-spec`, se envía como `<current-webxr-scene>` (JSON compacto); si no, como `<current-webxr-html>` con el monitor de errores ya retirado (`stripPreviewMonitor`). Límite: 250 000 caracteres.
 - **Instrucción de sistema.** `SYSTEM_INSTRUCTION` (en español) define el rol ("Orbit XR"), las rutas de respuesta, las reglas de seguridad y compatibilidad del HTML, el formato de parches y el protocolo de reparación con `<ERRORS>`.
-- **Parámetros.** `temperature: 0.45` y respuesta en streaming con `generateContentStream`.
+- **Parámetros.** Los decide cada adaptador; el contrato solo pide texto en streaming.
 
 ### Qué hace `/api/chat` con la respuesta
 
-1. Exige sesión válida (si no, 401).
+1. Exige un token Bearer de `API_TOKENS` o una sesión web válida (si no, 401; con más de 10 tokens inválidos por IP en 15 minutos, 429).
 2. Pide el primer fragmento del generador **antes** de abrir el stream HTTP. Si falla o llega vacío, responde un 502 JSON normal en vez de un stream roto.
 3. Responde `application/x-ndjson` con un evento JSON por línea: `delta` (texto), `status` (fase), `final` (texto completo ya instrumentado), `done` o `error`.
 4. Si el texto acumulado no trae exactamente un bloque `<assistant-response>` no vacío, hace una segunda llamada al modelo pidiendo solo el resumen, sin regenerar la experiencia.
 5. Antes de emitir `final`, inyecta el monitor de errores en el HTML (`instrumentGeneratedResponse`).
+6. Con `?stream=false` hace lo mismo pero responde un único JSON `{ response, html, raw }`, pensado para integraciones.
 
 ## Parseo y validación de la respuesta
 
 El modelo no devuelve JSON estructurado de la API: devuelve texto con etiquetas, y el parseo ocurre en dos lugares. Ninguno usa un parser XML; se busca con `indexOf` y expresiones regulares, por eso las etiquetas deben aparecer literalmente y en orden.
 
-### 1. En el servidor (`gemini.ts`, `sceneTemplate.ts`, `patch.ts`)
+### 1. En el servidor (`orchestrator.ts`, `sceneTemplate.ts`, `patch.ts`)
 
 Al recibir el stream, el generador mira el comienzo de la respuesta y elige un modo:
 
@@ -125,117 +150,88 @@ Con un error fatal, el cliente arma un mensaje interno con un bloque `<ERRORS>` 
 
 `BuildOverlay` cubre el iframe con un estado según la fase: azul al generar o revisar, violeta al modificar con un parche y amarillo al reparar. `GhostCode` muestra el código fluyendo, un barrido de revisión y, tras un parche, las líneas que salen en rojo y las que entran en verde. Son recursos visuales; no reflejan la detección real de errores.
 
-## Modelo actual: Gemini
+## Adaptadores incluidos
+
+### Claude CLI (`claude-cli`)
 
 | Aspecto | Valor actual |
 | --- | --- |
-| SDK | `@google/genai` (declarado como `latest` en `server/package.json`) |
+| Adaptador | `claude-cli` (`server/src/llm/claudeCli.ts`) |
+| Modelo | `CLAUDE_CLI_MODEL`, por defecto `haiku` |
+| Autenticación | La sesión de Claude Code ya iniciada en la máquina; no usa clave de API |
+| Llamada | `claude -p --model <modelo> --output-format stream-json --include-partial-messages --system-prompt <prompt>` |
+| Aislamiento | `--tools ""`, `--strict-mcp-config`, `--setting-sources ""`, `--no-session-persistence` y directorio de trabajo temporal: el modelo no tiene herramientas ni ve el repositorio |
+| Salida | Se leen los eventos `content_block_delta` / `text_delta`; un `result` con `is_error` o un código de salida distinto de 0 se convierten en error |
+| Límite de salida | `CLAUDE_CLI_MAX_OUTPUT_TOKENS`, por defecto 64 000 |
+
+Particularidades:
+
+- **Un solo prompt.** `claude -p` recibe un único mensaje por stdin, así que `serializeConversation` convierte el historial en un transcript `<conversation><turn role="...">…</turn></conversation>` seguido del mensaje actual. Con un solo mensaje se envía tal cual.
+- **Solo local.** Funciona donde la CLI esté instalada y autenticada. No sirve en Railway: para producción hay que añadir un adaptador con clave de API.
+- **Latencia.** Cada petición arranca un proceso nuevo de la CLI (alrededor de un segundo extra).
+
+### Gemini (`gemini`)
+
+| Aspecto | Valor actual |
+| --- | --- |
+| Adaptador | `server/src/llm/gemini.ts` |
+| SDK | `@google/genai` |
 | Modelo | `GEMINI_MODEL`, por defecto `gemini-3.6-flash` |
 | Autenticación | `GEMINI_API_KEY` de Google AI Studio, usada solo en el servidor |
-| Llamada | `ai.models.generateContentStream({ model, contents, config })` |
-| Temperatura | `0.45` |
-| Instrucción de sistema | `config.systemInstruction` |
-| Salida | Texto en streaming; el código lee `chunk.text` |
-| Archivo | `server/src/gemini.ts`, función `createGeminiGenerator` |
+| Llamada | `ai.models.generateContentStream({ model, contents, config: { systemInstruction, temperature: 0.45, abortSignal } })` |
 
-### Particularidades de Gemini que aparecen en el código
+Gemini llama `model` al rol del asistente; el adaptador traduce `assistant` → `model` y el resto del sistema usa siempre `assistant`.
 
-- **Rol `model`.** Gemini nombra `model` al asistente (no `assistant`). Esa convención se propagó a `ChatRole` en `types.ts`, a la validación de `app.ts` y al cliente, que guarda los mensajes con `role: "model"`.
-- **Estructura `Content`.** Cada mensaje se convierte en `{ role, parts: [{ text }] }`.
-- **Instrucción de sistema en `config`.** No viaja como mensaje del historial.
-- **Reintentos conversacionales.** El respaldo por parche o escena inválida y la petición del resumen faltante añaden turnos `model` y `user` al historial; con Gemini funciona hoy, pero otros proveedores pueden exigir alternancia estricta (ver la sección siguiente).
-- **Registro de depuración.** `recordRaw` envuelve el stream y, con `LLM_RAW_DEBUG=true`, escribe el texto crudo en `.experiments/llm-<fecha>.txt`. Es útil para ver exactamente qué etiquetas devolvió el modelo.
+### Registro de depuración
 
-### Observación a revisar
-
-En `gemini.ts` el objeto `config` incluye `ThinkingLevel: 0` con mayúscula inicial a nivel raíz. En el SDK de Google el ajuste de razonamiento va dentro de `thinkingConfig` (con `thinkingLevel` o `thinkingBudget`), por lo que esa línea probablemente no tiene efecto: TypeScript no la rechaza porque `config` se declara como variable antes de pasarla. Si se busca controlar el razonamiento, conviene confirmarlo en la documentación de la versión instalada. El `ThinkingLevel` importado tampoco se usa.
-
-### Referencias a "Gemini" fuera del adaptador
-
-Son solo textos, pero conviene tenerlos presentes al cambiar de proveedor: el mensaje de error de `app.ts` ("No se pudo obtener una respuesta de Gemini" y "Gemini devolvió una respuesta vacía"), el de `client/src/streamParser.ts` ("Gemini no devolvió un documento HTML completo"), el nombre del paquete `@gemini-chatbot/server`, las variables `GEMINI_*` y el `README.md`.
+`recordRaw` (en el orquestador) escribe el texto crudo en `.experiments/llm-<fecha>.txt` con `LLM_RAW_DEBUG=true`, indicando `proveedor/modelo`. Sirve igual para todos los adaptadores.
 
 ## Cómo conectar otro LLM
 
 ### Qué no cambia
 
-El cliente completo, `app.ts` (salvo textos), `sceneTemplate.ts`, `patch.ts`, `previewMonitor.ts`, el protocolo NDJSON y el bucle de reparación son independientes del proveedor. Nada fuera de `gemini.ts` e `index.ts` importa el SDK de Google, y los tests del servidor no dependen de él.
+El cliente completo, `app.ts`, `prompt.ts`, `orchestrator.ts`, `sceneTemplate.ts`, `patch.ts`, `previewMonitor.ts`, el protocolo NDJSON, la API para clientes externos y el bucle de reparación son independientes del proveedor. Solo `server/src/llm/` sabe con qué modelos se habla.
 
-### El obstáculo: `gemini.ts` mezcla dos cosas
+### Pasos
 
-Hoy el archivo contiene el cliente de Gemini **y** la lógica propia del producto: el prompt de sistema, el anexado del documento vigente, la detección de modo (escena, parche o libre) y el respaldo cuando falla la compilación. Si se escribe un segundo adaptador copiando el archivo, esa lógica queda duplicada. Lo recomendable es separarlas una sola vez:
+1. Crear `server/src/llm/<proveedor>.ts` que exporte un `ProviderDefinition` (`{ id, create(env) }`); `create` lee sus variables (clave, modelo) y lanza un error claro si falta alguna.
+2. Añadirlo a `PROVIDER_DEFINITIONS` en `server/src/llm/index.ts`.
+3. Añadir el SDK a `server/package.json` y documentar las variables en `.env.example`.
+4. Activarlo incluyendo su id en `LLM_PROVIDERS`. Aparecerá en `GET /api/providers` y en el selector del frontend.
+5. Probar con `LLM_RAW_DEBUG=true` tres casos: escena nueva, modificación por parche y reparación con un error forzado.
 
-| Pieza | Dónde vive hoy | Dónde debería vivir |
-| --- | --- | --- |
-| `SYSTEM_INSTRUCTION` | `gemini.ts` | `server/src/prompt.ts` |
-| Anexar `<current-webxr-scene>` o `<current-webxr-html>` al último mensaje | `gemini.ts` | función compartida, antes de llamar al proveedor |
-| Detección de modo, compilación y respaldo | `gemini.ts` | `server/src/orchestrator.ts`, parametrizado por una función de streaming |
-| Llamada al SDK, conversión de roles, lectura de fragmentos | `gemini.ts` | un adaptador por proveedor |
-| Registro crudo (`recordRaw`) | `gemini.ts` | compartido |
-
-La interfaz mínima que debe cumplir un adaptador es esta:
-
-```ts
-// Recibe el historial ya preparado y la instrucción de sistema;
-// devuelve solo los fragmentos de texto, en orden.
-export type StreamText = (
-  messages: ChatMessage[],
-  systemInstruction: string,
-) => Promise<AsyncIterable<string>>;
-
-// El orquestador conserva la lógica actual de gemini.ts y devuelve GenerateReply.
-export function createGenerator(streamText: StreamText, rawLogDir?: string): GenerateReply;
-```
-
-Con eso, cada proveedor nuevo es un archivo de unas 30 líneas. Boceto (sin probar) para una API compatible con OpenAI:
+Boceto (sin probar) de un adaptador para una API compatible con OpenAI:
 
 ```ts
 import OpenAI from "openai";
+import type { LlmProvider } from "./types.js";
 
-export function createOpenAiStream(apiKey: string, model: string, baseURL?: string): StreamText {
+export function createOpenAiProvider(apiKey: string, model: string, baseURL?: string): LlmProvider {
   const client = new OpenAI({ apiKey, baseURL });
-  return async (messages, systemInstruction) => {
-    const stream = await client.chat.completions.create({
-      model,
-      stream: true,
-      temperature: 0.45,
-      messages: [
-        { role: "system", content: systemInstruction },
-        ...messages.map(m => ({
-          role: m.role === "model" ? ("assistant" as const) : ("user" as const),
-          content: m.content,
-        })),
-      ],
-    });
-    return (async function* () {
+  return {
+    id: "openai",
+    label: `OpenAI ${model}`,
+    model,
+    async *streamText({ system, messages, signal }) {
+      const stream = await client.chat.completions.create(
+        { model, stream: true, messages: [{ role: "system", content: system }, ...messages] },
+        { signal },
+      );
       for await (const chunk of stream) {
         const text = chunk.choices[0]?.delta?.content;
         if (text) yield text;
       }
-    })();
+    },
   };
 }
 ```
 
-### Lista de cambios por archivo
+### Diferencias entre proveedores que cubre el adaptador
 
-| Archivo | Cambio |
-| --- | --- |
-| `server/src/<proveedor>.ts` (nuevo) | Adaptador `StreamText` del proveedor: cliente, conversión de roles, parámetros y lectura del stream. |
-| `server/src/orchestrator.ts` (nuevo) | Mueve aquí lo que no es del proveedor desde `gemini.ts`. |
-| `server/src/index.ts` | Elegir el adaptador con una variable (por ejemplo `LLM_PROVIDER=gemini\|openai\|anthropic`) y leer la clave correspondiente en lugar de exigir siempre `GEMINI_API_KEY`. |
-| `server/package.json` | Añadir el SDK nuevo y fijar versiones en lugar de `latest`. |
-| `.env.example` y `README.md` | Documentar las variables nuevas. |
-| `server/src/app.ts` | Cambiar los dos textos que dicen "Gemini" por un mensaje neutro. |
-| `client/src/streamParser.ts` | Cambiar el texto "Gemini no devolvió…" por uno neutro. |
-| `client/src/types.ts` y `server/src/types.ts` | Opcional: el rol `"model"` es convención de Gemini; puede mantenerse internamente y traducirse solo en el adaptador. |
-
-### Diferencias entre proveedores que hay que cubrir en el adaptador
-
-- **Rol del asistente.** `model` en Gemini; `assistant` en OpenAI y Anthropic.
-- **Instrucción de sistema.** Gemini la recibe en `config.systemInstruction`; OpenAI como primer mensaje con rol `system`; Anthropic en el campo `system`.
-- **Límite de salida.** Un documento HTML completo es largo. Anthropic exige indicar `max_tokens` y OpenAI limita la salida por defecto según el modelo: hay que fijar un valor suficiente o las respuestas quedarán truncadas y el HTML no cerrará.
-- **Alternancia de turnos.** Algunos proveedores exigen alternar `user` y `assistant` y empezar por `user`. El respaldo de `gemini.ts` añade turnos `model` y `user` seguidos del historial, y la petición de resumen envía solo el último mensaje; hay que comprobar que ninguno de los dos viole la regla.
-- **Razonamiento.** Cada proveedor lo activa con un parámetro distinto; el que hay hoy (`ThinkingLevel`) es específico de Gemini y debe quedarse en su adaptador.
+- **Instrucción de sistema.** Unos la reciben en un campo propio (`system`), otros como primer mensaje con rol `system`.
+- **Límite de salida.** Un documento HTML completo es largo. Hay que fijar un límite de tokens suficiente o el HTML quedará truncado y no cerrará.
+- **Alternancia de turnos.** El historial que llega al adaptador siempre empieza y termina con `user`. El respaldo del orquestador añade un turno `assistant` y otro `user`, y la petición de resumen envía solo el último mensaje del usuario, la respuesta y la instrucción; ambos respetan la alternancia.
+- **Razonamiento y temperatura.** Cada proveedor los configura con parámetros distintos; esos ajustes se quedan dentro de su adaptador.
 - **Contexto.** El documento vigente puede llegar a 250 000 caracteres más historial; el modelo elegido debe admitirlo.
 
 ### Calidad del contrato por etiquetas
@@ -248,11 +244,3 @@ El sistema depende de que el modelo cumpla un formato exacto. Al probar otro mod
 4. Que respete las reglas de CDN: versiones fijas y sin imports "bare".
 
 Para depurar, active `LLM_RAW_DEBUG=true` y revise `.experiments/`: allí queda el texto exacto devuelto, antes de cualquier parseo. Si un modelo falla de forma sistemática con las etiquetas, el ajuste se hace en `prompt.ts`, no en los parsers.
-
-### Pasos para la migración
-
-1. Extraer `prompt.ts` y `orchestrator.ts` sin cambiar el comportamiento; ejecutar `npm test`.
-2. Convertir `gemini.ts` en un adaptador `StreamText` y comprobar que la app sigue funcionando igual.
-3. Añadir el segundo adaptador y la selección por variable de entorno en `index.ts`.
-4. Probar con `LLM_RAW_DEBUG=true` tres casos: escena nueva, modificación por parche y reparación con un error forzado.
-5. Ajustar límites de salida y prompt según lo observado, y actualizar textos y documentación.

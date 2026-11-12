@@ -1,10 +1,6 @@
-import { appendFileSync, mkdirSync } from "node:fs";
-import path from "node:path";
-import { GoogleGenAI, ThinkingLevel, type Content } from "@google/genai";
-import type { ChatMessage, GenerateReply } from "./types.js";
+import type { ChatMessage } from "./types.js";
 import { stripPreviewMonitor } from "./previewMonitor.js";
-import { compileSceneResponse, extractSceneSpec } from "./sceneTemplate.js";
-import { applyPatchResponse } from "./patch.js";
+import { extractSceneSpec } from "./sceneTemplate.js";
 
 export const SYSTEM_INSTRUCTION = `Eres Orbit XR, un arquitecto y profesor experto en experiencias WebXR para la web.
 
@@ -56,91 +52,17 @@ Si el mensaje del usuario contiene un bloque <ERRORS>...</ERRORS>, su contenido 
 
 Responde en el idioma del usuario. Si se proporciona un documento o escena actual, úsalo como única base vigente para las modificaciones. La reparación puede devolver un parche, una escena compacta corregida o HTML libre completo.`;
 
-export function createGeminiGenerator(apiKey: string, model: string, rawLogDir?: string): GenerateReply {
-  const ai = new GoogleGenAI({ apiKey });
-
-  async function* recordRaw(stream: AsyncIterable<{ text?: string }>, label: string, file: string) {
-    let raw = "";
-    try {
-      for await (const chunk of stream) {
-        if (chunk.text) raw += chunk.text;
-        yield chunk;
-      }
-    } finally {
-      try {
-        mkdirSync(path.dirname(file), { recursive: true });
-        appendFileSync(file, `===== ${label} (${model}) =====
-${raw}
-
-`, "utf8");
-      } catch (error) {
-        console.error("No se pudo escribir el log crudo del LLM:", error);
-      }
-    }
-  }
-
-  return async (messages: ChatMessage[], currentHtml?: string) => {
-    const contents: Content[] = messages.map(({ role, content }) => ({
-      role,
-      parts: [{ text: content }],
-    }));
-
-    if (currentHtml) {
-      const lastContent = contents.at(-1);
-      const lastPart = lastContent?.parts?.[0];
-      if (lastPart && "text" in lastPart) {
-        const currentScene = extractSceneSpec(currentHtml);
-        lastPart.text = currentScene
-          ? `${lastPart.text}\n\nEsta es la escena WebXR vigente. Consérvala como base si la solicitud requiere cambios:\n<current-webxr-scene>\n${currentScene}\n</current-webxr-scene>`
-          : `${lastPart.text}\n\nEste es el documento WebXR vigente que debes conservar como base si la solicitud requiere cambios:\n<current-webxr-html>\n${stripPreviewMonitor(currentHtml)}\n</current-webxr-html>`;
-      }
-    }
-
-    const config = {
-      systemInstruction: SYSTEM_INSTRUCTION,
-      temperature: 0.45,
-      ThinkingLevel: 0,
-    };
-    const rawFile = rawLogDir ? path.join(rawLogDir, `llm-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`) : undefined;
-    const track = <T extends { text?: string }>(stream: AsyncIterable<T>, label: string): AsyncIterable<T> =>
-      rawFile ? (recordRaw(stream, label, rawFile) as AsyncIterable<T>) : stream;
-    const responseStream = track(await ai.models.generateContentStream({
-      model,
-      contents,
-      config,
-    }), "respuesta");
-
-    return (async function* () {
-      let mode: "unknown" | "scene" | "patch" | "other" = "unknown";
-      let buffered = "";
-      for await (const chunk of responseStream) {
-        const text = chunk.text;
-        if (!text) continue;
-        if (mode === "other") { yield text; continue; }
-        buffered += text;
-        if (mode === "unknown") {
-          const head = buffered.trimStart();
-          if (head.startsWith("<webxr-scene>")) mode = "scene";
-          else if (head.startsWith("<webxr-patch>")) { mode = "patch"; yield { phase: "patching" as const }; }
-          else if (buffered.includes(">") || buffered.length > 100) mode = "other";
-        }
-        if (mode === "other") { yield buffered; buffered = ""; }
-      }
-      if (mode !== "scene" && mode !== "patch") { if (buffered) yield buffered; return; }
-      const isPatch = buffered.trimStart().startsWith("<webxr-patch>");
-      try {
-        yield isPatch ? applyPatchResponse(buffered, currentHtml) : compileSceneResponse(buffered);
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : "Escena inválida";
-        const what = isPatch ? "El parche no se pudo aplicar" : "La escena compacta no se pudo construir";
-        if (isPatch) yield { phase: "patch-fallback" as const };
-        const fallback = track(await ai.models.generateContentStream({
-          model,
-          contents: [...contents, { role: "model", parts: [{ text: buffered }] }, { role: "user", parts: [{ text: `${what} (${reason}). Devuelve ahora una experiencia completa usando exclusivamente el FORMATO HTML LIBRE. Conserva todos los requisitos originales.` }] }],
-          config,
-        }), "fallback");
-        for await (const chunk of fallback) if (chunk.text) yield chunk.text;
-      }
-    })();
-  };
+/**
+ * Anexa la experiencia vigente (escena compacta o HTML) al último mensaje del usuario
+ * para que el modelo la use como base. No modifica el arreglo original.
+ */
+export function withCurrentExperience(messages: ChatMessage[], currentHtml?: string): ChatMessage[] {
+  const result = messages.map((message) => ({ ...message }));
+  const last = result.at(-1);
+  if (!currentHtml || !last) return result;
+  const currentScene = extractSceneSpec(currentHtml);
+  last.content = currentScene
+    ? `${last.content}\n\nEsta es la escena WebXR vigente. Consérvala como base si la solicitud requiere cambios:\n<current-webxr-scene>\n${currentScene}\n</current-webxr-scene>`
+    : `${last.content}\n\nEste es el documento WebXR vigente que debes conservar como base si la solicitud requiere cambios:\n<current-webxr-html>\n${stripPreviewMonitor(currentHtml)}\n</current-webxr-html>`;
+  return result;
 }

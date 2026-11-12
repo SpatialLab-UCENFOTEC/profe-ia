@@ -1,6 +1,6 @@
 import type { RefObject } from "react";
 import type { Message } from "../../types";
-import { TopBar } from "../TopBar";
+import { TopBar, type ProviderPickerProps } from "../TopBar";
 import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
 import { WelcomeScreen } from "./WelcomeScreen";
@@ -19,6 +19,7 @@ export function ChatPane({
   onInputChange,
   onSend,
   onDismissError,
+  providerPicker,
 }: {
   messages: Message[];
   isLoading: boolean;
@@ -33,10 +34,11 @@ export function ChatPane({
   onInputChange: (value: string) => void;
   onSend: (content: string) => void;
   onDismissError: () => void;
+  providerPicker: ProviderPickerProps;
 }) {
   return (
     <section className={`chat-pane ${isPreviewVisible ? "with-preview" : ""}`}>
-      <TopBar showOpenPreview={showOpenPreview} onOpenPreview={onOpenPreview} />
+      <TopBar showOpenPreview={showOpenPreview} onOpenPreview={onOpenPreview} providerPicker={providerPicker} />
       <div className="conversation">
         {messages.length === 0 ? (
           <WelcomeScreen onSuggestion={onSend} />

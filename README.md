@@ -1,6 +1,6 @@
 # Orbit XR
 
-Asistente full-stack que genera experiencias WebXR completas con Gemini, muestra el HTML en un iframe mientras se produce y permite conversar sobre cada versión, verla a pantalla completa y descargarla.
+Asistente full-stack que genera experiencias WebXR completas con un modelo de lenguaje intercambiable, muestra el HTML en un iframe mientras se produce y permite conversar sobre cada versión, verla a pantalla completa y descargarla.
 
 ## Funciones
 
@@ -10,17 +10,20 @@ Asistente full-stack que genera experiencias WebXR completas con Gemini, muestra
 - Documento HTML completo en un bloque plegable, seguido de una explicación Markdown.
 - Preview lateral en escritorio y superpuesto en móvil, con recarga, expansión y descarga.
 - Historial mantenido durante la sesión abierta; el HTML vigente se utiliza como base para cambios posteriores.
-- API key de Gemini utilizada únicamente por el servidor.
-- Acceso protegido por contraseña con sesión segura en cookie `HttpOnly`.
+- Varios modelos de lenguaje conectados a la vez, detrás de una sola interfaz de adaptador (`server/src/llm/`). Se elige el modelo por petición o desde el selector de la barra superior. Incluye `claude-cli` (Claude mediante la CLI de Claude Code de la máquina) y `gemini` (API de Google AI Studio).
+- API HTTP para otros clientes con tokens Bearer ([docs/api.md](docs/api.md)).
+- Acceso web protegido por contraseña con sesión segura en cookie `HttpOnly`.
 
 ## Requisitos
 
 - Node.js 20.19 o superior.
-- Una API key de [Google AI Studio](https://aistudio.google.com/app/apikey).
+- Al menos un modelo de lenguaje:
+  - `claude-cli`: [Claude Code](https://code.claude.com) instalado y con sesión iniciada (`claude auth status`).
+  - `gemini`: una API key de [Google AI Studio](https://aistudio.google.com/app/apikey).
 
 ## Configuración local
 
-Copia `.env.example` como `.env` y configura `GEMINI_API_KEY` y `ACCESS_PASSWORD`. La contraseña se valida exclusivamente en el servidor y nunca se incluye en el bundle del cliente.
+Copia `.env.example` como `.env` y configura `ACCESS_PASSWORD`, los modelos activos (`LLM_PROVIDERS` y las variables de cada adaptador) y, si otros clientes usarán la API, `API_TOKENS`. La contraseña se valida exclusivamente en el servidor y nunca se incluye en el bundle del cliente.
 
 - Para probar sesiones XR inmersivas: navegador y dispositivo compatibles, además de HTTPS o `localhost`. El usuario debe iniciar XR mediante un gesto explícito.
 - Conexión a Internet para las experiencias que carguen librerías, modelos o texturas desde CDN.
@@ -34,9 +37,12 @@ Copia `.env.example` como `.env` y configura `GEMINI_API_KEY` y `ACCESS_PASSWORD
 2. Crea `.env` en la raíz, tomando `.env.example` como base:
 
    ```env
+   LLM_PROVIDERS=claude-cli,gemini
+   LLM_DEFAULT_PROVIDER=claude-cli
+   CLAUDE_CLI_MODEL=haiku
    GEMINI_API_KEY=tu_api_key
-   GEMINI_MODEL=gemini-3.6-flash
    ACCESS_PASSWORD=una_contraseña_larga_y_segura
+   API_TOKENS=mi-cliente:token_aleatorio_de_al_menos_32_caracteres
    PORT=3000
    ```
 
@@ -60,6 +66,8 @@ El servidor de producción entrega la aplicación compilada en `http://localhost
 
 ## Despliegue en Railway
 
+> El adaptador `claude-cli` necesita la CLI de Claude autenticada en la máquina, así que no funciona en Railway. En producción activa solo adaptadores con clave de API, por ejemplo `LLM_PROVIDERS=gemini` (ver [Modelos de lenguaje](docs/api.md#modelos-de-lenguaje)).
+
 El repositorio está preparado para desplegarse como **un único servicio**: Railway compila el cliente y el servidor, y Express sirve tanto la API como los archivos estáticos. La configuración en `railway.json` define Railpack, los comandos de build y arranque, el healthcheck y la política de reinicio.
 
 ### Desde GitHub
@@ -69,12 +77,13 @@ El repositorio está preparado para desplegarse como **un único servicio**: Rai
 3. En **Variables**, agrega:
 
    ```env
+   LLM_PROVIDERS=gemini
    GEMINI_API_KEY=tu_api_key_real
    ACCESS_PASSWORD=una_contraseña_larga_y_segura
-   GEMINI_MODEL=gemini-3.6-flash
+   API_TOKENS=mi-cliente:token_aleatorio_de_al_menos_32_caracteres
    ```
 
-   `GEMINI_MODEL` es opcional. No definas `PORT`: Railway lo asigna automáticamente.
+   `API_TOKENS` es opcional. No definas `PORT`: Railway lo asigna automáticamente.
 4. En **Settings → Networking**, genera un dominio público. Railway volverá a desplegar automáticamente con cada push a la rama conectada.
 
 ### Desde la CLI
@@ -83,7 +92,7 @@ Con la [CLI de Railway](https://docs.railway.com/cli) instalada y autenticada, e
 
 ```bash
 railway init
-railway variables set GEMINI_API_KEY=tu_api_key_real ACCESS_PASSWORD=una_contraseña_larga_y_segura
+railway variables set LLM_PROVIDERS=gemini GEMINI_API_KEY=tu_api_key_real ACCESS_PASSWORD=una_contraseña_larga_y_segura
 railway up
 railway domain
 ```
@@ -94,10 +103,13 @@ Comprueba el despliegue en `https://TU-DOMINIO/api/health`. Debe responder con `
 
 ## API
 
-- `GET /api/health`: devuelve el estado y modelo configurado.
-- `POST /api/chat`: recibe `{ "messages": [...], "currentHtml": "..." }` y transmite líneas NDJSON con eventos `delta`, `done` o `error`.
+- `GET /api/health`: estado y modelos de lenguaje activos.
+- `GET /api/providers`: modelos activos con su nombre y el predeterminado (requiere autenticación).
+- `POST /api/chat`: recibe `{ "messages": [...], "currentHtml": "...", "provider": "..." }` y transmite líneas NDJSON (`delta`, `status`, `final`, `done`, `error`), o devuelve un único JSON con `?stream=false`.
 
-El cliente conserva únicamente resúmenes en el historial enviado al modelo y adjunta por separado la última versión HTML terminada. No se utiliza base de datos ni almacenamiento persistente del navegador.
+Otros clientes acceden con `Authorization: Bearer <token>`. La referencia completa, con ejemplos, está en [docs/api.md](docs/api.md).
+
+El frontend conserva únicamente resúmenes en el historial enviado al modelo y adjunta por separado la última versión HTML terminada. No se utiliza base de datos ni almacenamiento persistente del navegador.
 
 ## Motor de escenas
 

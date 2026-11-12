@@ -1,4 +1,4 @@
-export type Role = "user" | "model";
+export type Role = "user" | "assistant";
 export type PreviewMode = "closed" | "split" | "fullscreen";
 export type AuthState = "checking" | "locked" | "authenticated";
 export type PreviewStatus = "idle" | "generating" | "patching" | "checking" | "ready" | "repairing" | "repair-failed";
@@ -25,3 +25,10 @@ export type StreamEvent =
   | { type: "final"; text: string }
   | { type: "done" }
   | { type: "error"; message: string };
+
+/** Proveedor de LLM configurado en el servidor (GET /api/providers). */
+export interface LlmProviderInfo {
+  id: string;
+  label: string;
+  model: string;
+}

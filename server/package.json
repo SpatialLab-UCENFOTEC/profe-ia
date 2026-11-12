@@ -1,5 +1,5 @@
 {
-  "name": "@gemini-chatbot/server",
+  "name": "@orbit-xr/server",
   "version": "1.0.0",
   "private": true,
   "type": "module",
