@@ -1,4 +1,6 @@
+import { AnimatePresence, motion } from "motion/react";
 import type { GhostDiff, PreviewStatus } from "../../types";
+import { heavy } from "../../motion";
 import { GhostCode, type GhostMode } from "./GhostCode";
 
 const STATUS_TEXT: Partial<Record<PreviewStatus, string>> = {
@@ -39,14 +41,33 @@ export function BuildOverlay({
   const text = STATUS_TEXT[previewStatus] ?? "Comprobando que todo funcione…";
 
   return (
-    <div className={`build-overlay ${STATUS_TONE[previewStatus] ?? ""}`} role="status" aria-live="polite">
+    <motion.div
+      className={`build-overlay ${STATUS_TONE[previewStatus] ?? ""}`}
+      role="status"
+      aria-live="polite"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0, scale: 1.04, transition: { duration: 0.35, ease: "easeIn" } }}
+      transition={{ duration: 0.25 }}
+    >
       <div className="liquid-lens"><span /><span /><span /></div>
       {ghostCode && <GhostCode code={ghostCode} mode={ghostMode(previewStatus, isStreamingCode)} diff={ghostDiff} errorLines={errorLines} onSequenceChange={onSequenceChange} />}
       <div className="build-status">
         {previewStatus !== "repair-failed" && <div className="build-sweep" aria-hidden="true" />}
-        <strong>{text}</strong>
-        {(previewStatus === "checking" || previewStatus === "repair-failed") && <small>{previewStatus === "checking" ? "La interacción se habilitará al terminar el chequeo" : "Puedes recargar para volver a comprobar o solicitar un cambio"}</small>}
+        {/* Cada cambio de estado: el texto anterior sale hacia arriba y el nuevo cae con rebote. */}
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.div
+            key={text}
+            initial={{ opacity: 0, y: -26, scaleY: 1.15 }}
+            animate={{ opacity: 1, y: 0, scaleY: 1 }}
+            exit={{ opacity: 0, y: 18, scaleY: 0.85, transition: { duration: 0.16, ease: "easeIn" } }}
+            transition={{ ...heavy, opacity: { duration: 0.15 } }}
+          >
+            <strong>{text}</strong>
+            {(previewStatus === "checking" || previewStatus === "repair-failed") && <small>{previewStatus === "checking" ? "La interacción se habilitará al terminar el chequeo" : "Puedes recargar para volver a comprobar o solicitar un cambio"}</small>}
+          </motion.div>
+        </AnimatePresence>
       </div>
-    </div>
+    </motion.div>
   );
 }

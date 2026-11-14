@@ -1,4 +1,6 @@
+import { AnimatePresence, motion } from "motion/react";
 import type { LlmProviderInfo } from "../types";
+import { dropIn, popIn, pressable } from "../motion";
 
 export interface ProviderPickerProps {
   providers: LlmProviderInfo[];
@@ -28,11 +30,17 @@ export function TopBar({ showOpenPreview, onOpenPreview, providerPicker }: {
   providerPicker: ProviderPickerProps;
 }) {
   return (
-    <header className="topbar">
+    <motion.header className="topbar" variants={dropIn} initial="hidden" animate="show">
       <a className="brand-mark" href="/" aria-label="Volver al inicio de ProfeIA" title="Volver al inicio"><img src="/university-logo.png" alt="Logo de la universidad" /></a>
       <div className="brand-copy"><h1>ProfeIA</h1><p>Construye mundos WebXR conversando</p></div>
-      {showOpenPreview && <button className="btn btn-sm btn-outline ml-auto" onClick={onOpenPreview}>Abrir experiencia</button>}
+      <AnimatePresence>
+        {showOpenPreview && (
+          <motion.button key="open-preview" className="open-experience" onClick={onOpenPreview} variants={popIn} initial="hidden" animate="show" exit="exit" {...pressable}>
+            Abrir experiencia
+          </motion.button>
+        )}
+      </AnimatePresence>
       <ProviderPicker {...providerPicker} />
-    </header>
+    </motion.header>
   );
 }

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { AnimatePresence, MotionConfig } from "motion/react";
 import { WebXrStreamParser, isCompleteHtmlDocument } from "./streamParser";
 import { classifyPreviewDiagnostic, errorsPrompt, type ClassifiedDiagnostic, type PreviewDiagnostic } from "./previewDiagnostics";
 import { MAX_CONTEXT_MESSAGES, MAX_REPAIR_ATTEMPTS, PREVIEW_STARTUP_TIMEOUT_MS } from "./constants";
@@ -401,10 +402,11 @@ export default function App() {
   }
 
   if (authState === "locked") {
-    return <AccessScreen password={password} error={authError} isSubmitting={isAuthenticating} onPasswordChange={setPassword} onSubmit={login} />;
+    return <MotionConfig reducedMotion="user"><AccessScreen password={password} error={authError} isSubmitting={isAuthenticating} onPasswordChange={setPassword} onSubmit={login} /></MotionConfig>;
   }
 
   return (
+    <MotionConfig reducedMotion="user">
     <main className="app-shell">
       <div className="orb orb-one" /><div className="orb orb-two" />
       {import.meta.env.DEV && <DevAuditPanel disabled={isLoading} onLoad={loadDevScenario} />}
@@ -424,7 +426,9 @@ export default function App() {
         onDismissError={() => setError(null)}
         providerPicker={{ providers, selected: selectedProvider, disabled: isLoading, onSelect: selectProvider }}
       />
+      <AnimatePresence>
       {isPreviewVisible && <PreviewPanel
+        key="preview"
         previewMode={previewMode}
         previewStatus={previewStatus}
         statusLabel={previewStatusLabel}
@@ -442,6 +446,8 @@ export default function App() {
         onDownload={downloadHtml}
         onModeChange={setPreviewMode}
       />}
+      </AnimatePresence>
     </main>
+    </MotionConfig>
   );
 }

@@ -1,4 +1,5 @@
 import type { RefObject } from "react";
+import { AnimatePresence } from "motion/react";
 import type { Message } from "../../types";
 import { TopBar, type ProviderPickerProps } from "../TopBar";
 import { Composer } from "./Composer";
@@ -40,11 +41,13 @@ export function ChatPane({
     <section className={`chat-pane ${isPreviewVisible ? "with-preview" : ""}`}>
       <TopBar showOpenPreview={showOpenPreview} onOpenPreview={onOpenPreview} providerPicker={providerPicker} />
       <div className="conversation">
-        {messages.length === 0 ? (
-          <WelcomeScreen onSuggestion={onSend} />
-        ) : (
-          <MessageList messages={messages} isLoading={isLoading} streamingHtml={streamingHtml} streamingSummary={streamingSummary} />
-        )}
+        <AnimatePresence mode="wait">
+          {messages.length === 0 ? (
+            <WelcomeScreen key="welcome" onSuggestion={onSend} />
+          ) : (
+            <MessageList key="messages" messages={messages} isLoading={isLoading} streamingHtml={streamingHtml} streamingSummary={streamingSummary} />
+          )}
+        </AnimatePresence>
       </div>
       <Composer input={input} isLoading={isLoading} error={error} textareaRef={textareaRef} onInputChange={onInputChange} onSend={() => onSend(input)} onDismissError={onDismissError} />
     </section>
